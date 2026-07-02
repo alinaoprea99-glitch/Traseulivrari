@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/29434769/README.md)
+[README.md](https://github.com/user-attachments/files/29606355/README.md)
 # Trasee Curieri
 
 Aplicație web pentru planificarea automată a traseelor de livrare ale curierilor, cu repartizare optimizată a adreselor, calcul de intervale orare de livrare și export Excel.
@@ -17,7 +17,7 @@ Construită pentru livrări în **București, Ilfov și zona limitrofă**.
 - **Curieri** configurabili individual: punct de plecare, punct de finalizare (poate diferi de plecare), oră de plecare, oră-limită opțională, cu buton de confirmare/validare per curier. Lista de curieri se salvează automat local în browser și se reîncarcă la următoarea sesiune.
 - **Reset granular**: buton de resetare independent pentru curieri, pentru adrese, și pentru trasee — plus un buton global "Resetează tot"
 - **Repartizare automată** a adreselor pe curieri, în 2 pași:
-  1. partiționare în sectoare unghiulare (felii radiale din centrul livrărilor zilei) — fiecare curier primește o "felie" contiguă a orașului, nu o zonă arbitrară care poate uni două cartiere opuse prin centru
+  1. partiționare în sectoare unghiulare ancorate pe direcția reală a fiecărui curier față de centrul livrărilor zilei — un curier care pleacă din nord primește mereu sectorul nordic, indiferent de echilibrul brut de numere; doi curieri cu puncte de plecare apropiate primesc mereu sectoare vecine, nu opuse
   2. rafinare pe timp total de traseu (buffer de 2h între curieri), care mută adresele de la marginea sectorului celui mai încărcat — cea mai apropiată unghiular de direcția curierului mai puțin încărcat — pentru a nu rupe coerența geografică a sectoarelor
 - **Optimizare rută** per curier — matrice reală de timpi de drum (OSRM Table Service) + algoritm 2-opt local search pentru ordinea de vizitare, apoi geometrie reală desenată pe hartă (OSRM Route Service) cu ordinea fixată. Înlocuiește OSRM Trip Service, care pentru 10+ puncte folosește doar o euristică de aproximare (farthest-insertion) ce putea produce trasee cu salturi vizual incoerente.
 - **Intervale de livrare** calculate automat: ora estimată de sosire + buffer de predare, rotunjită la fereastră fixă de 2 ore
