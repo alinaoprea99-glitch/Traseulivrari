@@ -213,6 +213,26 @@ body{
 .dropzone .dz-sub{font-size:11.5px; color:var(--ink-soft); margin-top:3px;}
 input[type=file]{display:none;}
 
+.addr-toolbar-row{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:9px;
+}
+.addr-toolbar-link{
+  border:none;
+  background:none;
+  color:var(--ink-soft);
+  font-family:'Inter',sans-serif;
+  font-size:11px;
+  font-weight:600;
+  cursor:pointer;
+  padding:0;
+}
+.addr-toolbar-link:hover{color:var(--route); text-decoration:underline;}
+.addr-toolbar-sep{color:var(--line); font-size:10px;}
+
 /* ---- form fields ---- */
 .field{margin-bottom:12px;}
 .field label{
@@ -775,29 +795,24 @@ input[type=file]{display:none;}
     <!-- TAB: ADRESE -->
     <div class="panel" id="panel-adrese">
       <div style="flex-shrink:0;">
-        <div class="section">
-          <div class="section-title"><span>Import adrese</span></div>
-          <div class="dropzone" id="dropzone">
-            <div class="dz-icon">⇪</div>
-            <div class="dz-title">Trage fișierul aici sau apasă</div>
-            <div class="dz-sub">CSV sau XLSX · nume, telefon, adresă, sumă, plată</div>
+        <div class="section" style="padding-bottom:10px;">
+          <div class="dropzone" id="dropzone" style="padding:14px 12px;">
+            <div class="dz-icon" style="font-size:18px; margin-bottom:3px;">⇪</div>
+            <div class="dz-title" style="font-size:13px;">Trage fișierul aici sau apasă</div>
+            <div class="dz-sub" style="font-size:10.5px;">CSV sau XLSX · nume, telefon, adresă, sumă, plată</div>
           </div>
           <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
-          <button class="btn btn-ghost btn-block" id="addManualBtn" style="margin-top:10px;">+ Adaugă adresă manual</button>
-          <button class="btn btn-ghost btn-block btn-sm" id="resetAddressesBtn" style="margin-top:8px; color:var(--danger); border-color:var(--line);">Resetează adrese</button>
-        </div>
-        <div class="section" id="geocodeSection" style="display:none;">
-          <div class="section-title"><span>Geocodare</span></div>
-          <div id="geocodeStatus" class="loading-row"><span class="spinner sp-dark"></span><span>Se localizează adresele…</span></div>
-          <button class="btn btn-primary btn-block" id="geocodeBtn" style="margin-top:8px; display:none;">Localizează adresele</button>
-        </div>
-        <div class="section">
-          <div class="section-title">
-            <span>Bază adrese verificate</span>
-            <span id="verifiedDbCount">0</span>
+          <div id="geocodeSection" style="display:none;">
+            <div id="geocodeStatus" class="loading-row" style="margin-top:6px;"><span class="spinner sp-dark"></span><span>Se localizează adresele…</span></div>
+            <button class="btn btn-primary btn-block" id="geocodeBtn" style="margin-top:8px; display:none;">Localizează adresele</button>
           </div>
-          <div class="hint" style="margin-bottom:8px;">Adresele corectate manual sau re-localizate cu precizie se salvează aici, în acest browser, și sunt reutilizate automat la viitoare importuri identice.</div>
-          <button class="btn btn-ghost btn-block btn-sm" id="manageVerifiedDbBtn">Gestionează baza</button>
+          <div class="addr-toolbar-row">
+            <button class="addr-toolbar-link" id="addManualBtn">+ adresă manuală</button>
+            <span class="addr-toolbar-sep">·</span>
+            <button class="addr-toolbar-link" id="manageVerifiedDbBtn">bază verificate (<span id="verifiedDbCount">0</span>)</button>
+            <span class="addr-toolbar-sep">·</span>
+            <button class="addr-toolbar-link" id="resetAddressesBtn" style="color:var(--danger);">resetează adrese</button>
+          </div>
         </div>
       </div>
       <div class="addr-list" id="addrList" style="flex:1; min-height:0; overflow-y:auto;">
