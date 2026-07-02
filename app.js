@@ -229,6 +229,10 @@ async function confirmCourier(courierId){
     showToast(`Nu pot confirma ${courier.name}: completează ${errors.join(', ')}.`, true);
   } else {
     courier.confirmed = true;
+    if (state.routes[courier.id]){
+      computeDeliveryWindows(courier, state.routes[courier.id]);
+      renderRouteSummary();
+    }
     showToast(`${courier.name} a fost confirmat.`);
   }
 
@@ -350,6 +354,13 @@ function renderCouriers(){
       courier.departureTime = normalized;
       courier.confirmed = false;
       input.value = normalized;
+      // recalculate delivery windows immediately if a route already exists for this courier
+      // — no need to rerun the full route optimization, only the time offsets change
+      if (state.routes[courier.id]){
+        computeDeliveryWindows(courier, state.routes[courier.id]);
+        renderRouteSummary();
+        showToast(`Intervale de livrare actualizate pentru ${courier.name}.`);
+      }
       renderCouriers();
     });
   });
@@ -360,6 +371,11 @@ function renderCouriers(){
       courier.endTimeLimit = normalized;
       courier.confirmed = false;
       input.value = normalized;
+      // same: recalculate afterLimit flags without touching the route order
+      if (state.routes[courier.id]){
+        computeDeliveryWindows(courier, state.routes[courier.id]);
+        renderRouteSummary();
+      }
       renderCouriers();
       renderRouteSummary(); // re-check warnings against new limit
     });
