@@ -1559,75 +1559,91 @@ async function ensureAllCourierPointsGeocoded(){
 const COUNT_BUFFER = 6; // addresses of slack allowed between the busiest and lightest courier
 
 /**
- * Splits addresses into N angular sectors (wedges) radiating from a central point,
- * balanced by count within [minSize, maxSize]. Unlike k-means-style clustering, this
- * guarantees each group is a single contiguous slice of the compass around the center —
- * it cannot merge two opposite sides of the city (e.g. northwest and southeast) into one
- * group just because their centroids happen to average out near the middle. This matches
- * how a real dispatcher splits a radial city like Bucharest: each courier gets a "slice",
- * not an arbitrary blob.
+ * Splits addresses into N angular sectors (wedges) radiating from a central point, one
+ * per courier, anchored on each courier's own bearing from that center — not freely
+ * rotated to balance counts. This guarantees a courier whose start point is, say, due
+ * north of the delivery area always gets the northern sector, regardless of how many
+ * addresses naturally fall there. Two couriers starting near each other will always end
+ * up with adjacent (not opposite) sectors, since sector boundaries sit at the midpoint
+ * between each pair of neighboring courier bearings.
+ *
+ * The count buffer is still enforced afterward by trading addresses across adjacent
+ * sector boundaries only — it can rebalance load, but it can no longer relocate an
+ * entire sector to a courier on the opposite side of the city.
  */
-function sectorizeAddresses(addrs, numSectors, centerLat, centerLng, minSize, maxSize){
+function sectorizeAddressesByCourier(addrs, couriers, centerLat, centerLng, minSize, maxSize){
+  const numSectors = couriers.length;
   if (!addrs.length || numSectors <= 0) return [];
   if (numSectors === 1) return [addrs.slice()];
 
-  // Angle in degrees [0, 360) from the center point, longitude-compressed for latitude
-  // so the angle reflects real-world bearing rather than raw coordinate degrees.
-  const withAngles = addrs.map(a => {
-    const dLat = a.lat - centerLat;
-    const dLng = (a.lng - centerLng) * Math.cos(centerLat * Math.PI / 180);
+  const bearingOf = (lat, lng) => {
+    const dLat = lat - centerLat;
+    const dLng = (lng - centerLng) * Math.cos(centerLat * Math.PI / 180);
     let angle = Math.atan2(dLng, dLat) * 180 / Math.PI; // 0° = north, increasing clockwise
     if (angle < 0) angle += 360;
-    return { addr: a, angle };
+    return angle;
+  };
+
+  // Each courier's own bearing from the delivery centroid, sorted around the compass.
+  const courierBearings = couriers
+    .map((c, idx) => ({ idx, bearing: bearingOf(c.start.lat, c.start.lng) }))
+    .sort((a, b) => a.bearing - b.bearing);
+
+  // Sector boundaries sit at the midpoint between each pair of consecutive courier
+  // bearings (wrapping around 360°) — so sector i spans from the midpoint before
+  // courier i's bearing to the midpoint after it, centered on that courier's direction.
+  const boundaries = courierBearings.map((cur, i) => {
+    const next = courierBearings[(i + 1) % courierBearings.length].bearing;
+    let span = next - cur.bearing;
+    if (span <= 0) span += 360;
+    return cur.bearing + span / 2; // upper boundary of this courier's sector
   });
 
-  // Try several rotations of the sector boundaries and keep whichever gives the most
-  // balanced split — this avoids a fixed 0°/120°/240° grid awkwardly slicing through a
-  // dense cluster of addresses that all sit near one boundary.
-  let bestOffset = 0, bestScore = Infinity;
-  for (let offsetDeg = 0; offsetDeg < 360; offsetDeg += 5){
-    const counts = new Array(numSectors).fill(0);
-    withAngles.forEach(({angle}) => {
-      const sectorIdx = Math.floor(((angle - offsetDeg + 360) % 360) / (360 / numSectors));
-      counts[sectorIdx]++;
-    });
-    const maxCount = Math.max(...counts);
-    const variance = counts.reduce((s, c) => s + (c - addrs.length / numSectors) ** 2, 0);
-    const score = maxCount * 1000 + variance; // heavily penalize any single overloaded sector
-    if (score < bestScore){ bestScore = score; bestOffset = offsetDeg; }
-  }
+  const withAngles = addrs.map(a => ({ addr: a, angle: bearingOf(a.lat, a.lng) }));
 
-  const sectors = Array.from({length: numSectors}, () => []);
+  // sectorForCourierSlot[i] = list of addresses whose bearing falls within the wedge
+  // belonging to courierBearings[i] (in sorted-by-bearing order, NOT original courier order)
+  const sectorsBySlot = Array.from({length: numSectors}, () => []);
   withAngles.forEach(({addr, angle}) => {
-    const sectorIdx = Math.floor(((angle - bestOffset + 360) % 360) / (360 / numSectors));
-    sectors[sectorIdx].push(addr);
+    // find which slot's wedge contains this angle: slot i owns (lowerBoundary[i-1], boundaries[i]]
+    let slot = 0;
+    for (let i = 0; i < numSectors; i++){
+      const lower = boundaries[(i - 1 + numSectors) % numSectors];
+      const upper = boundaries[i];
+      const inWedge = lower < upper
+        ? (angle > lower && angle <= upper)
+        : (angle > lower || angle <= upper); // wedge wraps past 360°/0°
+      if (inWedge){ slot = i; break; }
+    }
+    sectorsBySlot[slot].push(addr);
   });
 
-  // Enforce the count buffer: move the address closest to a neighboring sector's edge
-  // when a sector ends up over maxSize (rare after rotation search, but possible with
-  // very uneven density), borrowing from/to adjacent sectors only — keeps wedges intact.
+  // Enforce the count buffer by trading addresses across ADJACENT slot boundaries only —
+  // this can shrink/grow a wedge slightly but never reassigns it to a non-neighboring slot.
   let iterations = 0;
   while (iterations < numSectors * 4){
     iterations++;
-    const over = sectors.map((s, i) => ({ i, size: s.length })).filter(s => s.size > maxSize).sort((a,b) => b.size - a.size)[0];
+    const over = sectorsBySlot.map((s, i) => ({ i, size: s.length })).filter(s => s.size > maxSize).sort((a,b) => b.size - a.size)[0];
     if (!over) break;
     const candidates = [(over.i - 1 + numSectors) % numSectors, (over.i + 1) % numSectors]
-      .filter(ni => sectors[ni].length < maxSize);
+      .filter(ni => sectorsBySlot[ni].length < maxSize);
     if (!candidates.length) break;
-    const targetSector = candidates.reduce((best, ni) => sectors[ni].length < sectors[best].length ? ni : best, candidates[0]);
-    // move the address whose angle is closest to the boundary it's crossing
-    const boundaryAngle = ((over.i * (360 / numSectors)) + bestOffset) % 360;
+    const targetSlot = candidates.reduce((best, ni) => sectorsBySlot[ni].length < sectorsBySlot[best].length ? ni : best, candidates[0]);
+    const boundaryAngle = boundaries[over.i === targetSlot - 1 || (over.i === numSectors - 1 && targetSlot === 0) ? over.i : (over.i - 1 + numSectors) % numSectors];
     let moveIdx = 0, moveDist = Infinity;
-    sectors[over.i].forEach((a, idx) => {
+    sectorsBySlot[over.i].forEach((a, idx) => {
       const aAngle = withAngles.find(w => w.addr === a).angle;
       const d = Math.min(Math.abs(aAngle - boundaryAngle), 360 - Math.abs(aAngle - boundaryAngle));
       if (d < moveDist){ moveDist = d; moveIdx = idx; }
     });
-    const [moved] = sectors[over.i].splice(moveIdx, 1);
-    sectors[targetSector].push(moved);
+    const [moved] = sectorsBySlot[over.i].splice(moveIdx, 1);
+    sectorsBySlot[targetSlot].push(moved);
   }
 
-  return sectors;
+  // Map slots back to original courier order/indices
+  const sectorsByOriginalCourierIdx = new Array(numSectors);
+  courierBearings.forEach((cb, slot) => { sectorsByOriginalCourierIdx[cb.idx] = sectorsBySlot[slot]; });
+  return sectorsByOriginalCourierIdx;
 }
 
 function assignAddressesToNearestCourier(addrs, couriers){
@@ -1646,32 +1662,15 @@ function assignAddressesToNearestCourier(addrs, couriers){
   const centerLat = free.reduce((s,a) => s+a.lat, 0) / free.length;
   const centerLng = free.reduce((s,a) => s+a.lng, 0) / free.length;
 
-  // 1. Split the free addresses into N angular sectors (N = number of couriers), each
-  //    within the allowed size range — contiguous wedges, not arbitrary blobs.
-  const sectors = sectorizeAddresses(free, couriers.length, centerLat, centerLng, minAllowed, maxAllowed);
+  // Split the free addresses into sectors anchored on each courier's own bearing from
+  // that center — sector i is already tied to couriers[i] by construction, so no separate
+  // sector-to-courier matching step is needed (and none can accidentally swap two couriers'
+  // wedges just because a rotation search happened to balance counts slightly better).
+  const sectorsByCourierIdx = sectorizeAddressesByCourier(free, couriers, centerLat, centerLng, minAllowed, maxAllowed);
 
-  // 2. Assign each whole sector to the courier whose start point is closest to that
-  //    sector's centroid. Solved greedily: repeatedly pick the (sector, courier) pair
-  //    with the smallest distance, removing both from further consideration.
-  const sectorCentroids = sectors.map(s => s.length ? {
-    lat: s.reduce((sum,a) => sum+a.lat, 0) / s.length,
-    lng: s.reduce((sum,a) => sum+a.lng, 0) / s.length
-  } : null);
-
-  const remainingSectorIdx = sectors.map((_, i) => i).filter(i => sectorCentroids[i]);
-  const remainingCouriers = couriers.slice();
-  while (remainingSectorIdx.length && remainingCouriers.length){
-    let bestPair = null, bestDist = Infinity;
-    remainingSectorIdx.forEach(si => {
-      remainingCouriers.forEach(c => {
-        const d = haversine(sectorCentroids[si].lat, sectorCentroids[si].lng, c.start.lat, c.start.lng);
-        if (d < bestDist){ bestDist = d; bestPair = { si, courier: c }; }
-      });
-    });
-    sectors[bestPair.si].forEach(a => { a.courierId = bestPair.courier.id; });
-    remainingSectorIdx.splice(remainingSectorIdx.indexOf(bestPair.si), 1);
-    remainingCouriers.splice(remainingCouriers.indexOf(bestPair.courier), 1);
-  }
+  couriers.forEach((c, idx) => {
+    (sectorsByCourierIdx[idx] || []).forEach(a => { a.courierId = c.id; });
+  });
 }
 
 function haversine(lat1, lon1, lat2, lon2){
