@@ -935,7 +935,6 @@ function renderAddresses(){
   state.addresses.forEach((a, idx) => {
     const item = document.createElement('div');
     item.className = 'addr-item';
-    item.draggable = true;
     item.dataset.id = a.id;
 
     let statusHtml = '';
@@ -1686,6 +1685,48 @@ function assignAddressesToNearestCourier(addrs, couriers){
 
   couriers.forEach((c, idx) => {
     (sectorsByCourierIdx[idx] || []).forEach(a => { a.courierId = c.id; });
+  });
+
+  rescueDistanceOutliers(free, couriers);
+}
+
+const OUTLIER_RESCUE_MIN_SAVING_KM = 3;   // only reassign if switching saves at least this many km
+const OUTLIER_RESCUE_MAX_RATIO = 0.7;     // ...and the nearest courier's distance is at most 70% of the assigned one
+
+/**
+ * Sector assignment above groups addresses purely by BEARING from the delivery centroid.
+ * That works well for a compact cluster, but for an address far outside it (e.g. a couple
+ * of Ilfov deliveries mixed into an otherwise all-Bucharest batch), bearing from the
+ * centroid says nothing about which courier's start point is actually closest — the sector
+ * that "happens" to cover that direction can easily belong to a courier who starts on the
+ * opposite side of the city. This pass corrects just those cases: it only moves an address
+ * when a different courier is substantially closer by real driving-adjacent distance, so
+ * sector coherence for addresses that actually sit inside the cluster is left untouched.
+ *
+ * Deliberately ignores the count-balance cap: it only ever moves a handful of genuine
+ * outliers (the saving/ratio thresholds see to that), and getting a stray address to the
+ * courier who can actually reach it matters more here than keeping counts even — any
+ * resulting imbalance is smoothed out afterward by the time-based balancing pass that
+ * runs once real route durations are known.
+ */
+function rescueDistanceOutliers(free, couriers){
+  free.forEach(addr => {
+    const currentCourier = couriers.find(c => c.id === addr.courierId);
+    if (!currentCourier) return;
+    const currentDist = haversine(addr.lat, addr.lng, currentCourier.start.lat, currentCourier.start.lng);
+
+    let nearest = currentCourier, nearestDist = currentDist;
+    couriers.forEach(c => {
+      const d = haversine(addr.lat, addr.lng, c.start.lat, c.start.lng);
+      if (d < nearestDist){ nearestDist = d; nearest = c; }
+    });
+    if (nearest.id === currentCourier.id) return;
+
+    const saving = currentDist - nearestDist;
+    const ratio = nearestDist / currentDist;
+    if (saving < OUTLIER_RESCUE_MIN_SAVING_KM || ratio > OUTLIER_RESCUE_MAX_RATIO) return;
+
+    addr.courierId = nearest.id;
   });
 }
 
