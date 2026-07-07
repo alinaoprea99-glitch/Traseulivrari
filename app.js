@@ -1726,7 +1726,64 @@ function assignAddressesToNearestCourier(addrs, couriers){
     (sectorsByCourierIdx[idx] || []).forEach(a => { a.courierId = c.id; });
   });
 
+  refineSectorBoundaries(free);
   rescueDistanceOutliers(free, couriers);
+}
+
+const BOUNDARY_SWAP_MAX_ITERATIONS = 4;
+const BOUNDARY_SWAP_RATIO = 0.6;   // only move if the cross-courier neighbor is under 60% of the distance to the nearest same-courier address
+const BOUNDARY_SWAP_MAX_KM = 1.5;  // ...and that cross-courier neighbor is genuinely close by (not just "closer of two far options")
+
+/**
+ * The angular sector boundary is a straight line through the delivery centroid — it has no
+ * idea that two addresses sitting almost on top of each other can fall on opposite sides of
+ * it. That produces exactly the kind of pair a dispatcher immediately spots as wrong on a
+ * map: address A (courier X) and address B (courier Y), a block apart, sent to two different
+ * couriers who both now have to drive out to that same corner separately.
+ *
+ * This pass compares each address's nearest cross-courier neighbor against TWO measures of
+ * how well it belongs to its own courier: the nearest same-courier neighbor, AND the distance
+ * to its own courier's centroid. The centroid check matters because a small huddle of 2-3
+ * stragglers protects itself from the nearest-neighbor check alone — each one's closest
+ * same-courier point is simply the OTHER straggler right next to it, which makes the pair
+ * look "well anchored" to each other even though both are far from the rest of their own
+ * courier's addresses and sitting right on top of a different courier's cluster. Either
+ * signal is enough to trigger a move; repeated a few times so a whole small huddle gets
+ * pulled across together, not just whichever single address is checked first.
+ */
+function refineSectorBoundaries(free){
+  for (let iter = 0; iter < BOUNDARY_SWAP_MAX_ITERATIONS; iter++){
+    let movedAny = false;
+    for (const addr of free){
+      let nearestOtherDist = Infinity, nearestOtherCourierId = null;
+      let nearestSameDist = Infinity;
+      let sameSumLat = 0, sameSumLng = 0, sameCount = 0;
+      free.forEach(other => {
+        if (other === addr) return;
+        const d = haversine(addr.lat, addr.lng, other.lat, other.lng);
+        if (other.courierId === addr.courierId){
+          if (d < nearestSameDist) nearestSameDist = d;
+          sameSumLat += other.lat; sameSumLng += other.lng; sameCount++;
+        } else if (d < nearestOtherDist){
+          nearestOtherDist = d;
+          nearestOtherCourierId = other.courierId;
+        }
+      });
+      if (nearestOtherCourierId == null || nearestOtherDist > BOUNDARY_SWAP_MAX_KM) continue;
+
+      const centroidDist = sameCount
+        ? haversine(addr.lat, addr.lng, sameSumLat / sameCount, sameSumLng / sameCount)
+        : Infinity;
+      const isStragglerByNeighbor = nearestOtherDist < nearestSameDist * BOUNDARY_SWAP_RATIO;
+      const isStragglerByCentroid = sameCount > 0 && nearestOtherDist < centroidDist * BOUNDARY_SWAP_RATIO;
+
+      if (isStragglerByNeighbor || isStragglerByCentroid){
+        addr.courierId = nearestOtherCourierId;
+        movedAny = true;
+      }
+    }
+    if (!movedAny) break;
+  }
 }
 
 const OUTLIER_RESCUE_MIN_SAVING_KM = 3;   // only reassign if switching saves at least this many km
