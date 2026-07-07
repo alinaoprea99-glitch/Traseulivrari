@@ -1441,32 +1441,52 @@ async function runAutoAssignAndRoute(){
   switchToTab('panel-trasee');
 }
 
-const TIME_BALANCE_BUFFER_MIN = 120; // up to 2h difference in total route time is acceptable
+const TIME_BALANCE_BUFFER_MIN = 30; // couriers' total route time should end up within ~30min of each other
 
 /**
  * Moves addresses from the courier with the longest total route time to the one with the
  * shortest, recomputing both routes each time, until the gap is within the buffer or no
- * further beneficial move exists. Respects the count-balance guarantee from step 1 by
- * refusing to drop a courier below COUNT_BUFFER-worth of addresses relative to the rest.
+ * further beneficial move exists.
+ *
+ * Count balance is NOT enforced here on purpose — a courier whose stops are far apart
+ * SHOULD end up with fewer of them for the same total time, and the user-facing goal for
+ * this pass is equal finish times, not equal stop counts (the geographic split earlier
+ * already gave every courier a reasonable starting count). The only floor kept is "never
+ * fully empty a courier's route out from under them mid-balance" — everything else is
+ * free to move. Without an explicit "eligible source" check, a courier that's already down
+ * to its last address (or a courier the previous pass just emptied) would incorrectly keep
+ * being picked as "longest" forever if its few remaining stops are still far apart, blocking
+ * ALL further balancing — including between two completely different couriers whose own gap
+ * has nothing to do with it.
+ *
+ * Each candidate move is verified, not assumed: since a single address can carry a big
+ * chunk of drive time, moving it can overshoot and make the gap WORSE (the courier that
+ * was shortest becomes the new longest). If that happens the move is reverted — using the
+ * already-computed previous route, no extra OSRM calls — and the next-best edge candidate
+ * is tried instead, up to a small cap per pass. This is what makes a tight buffer safe:
+ * without it, a strict target could thrash the same address back and forth every pass
+ * without ever converging.
  */
+const MAX_CANDIDATES_PER_BALANCE_PASS = 3;
+
 async function balanceRoutesByTime(couriers){
-  const MAX_PASSES = 20;
+  const MAX_PASSES = 30;
   for (let pass = 0; pass < MAX_PASSES; pass++){
     const withRoutes = couriers
       .map(c => ({ courier: c, route: state.routes[c.id] }))
       .filter(x => x.route);
     if (withRoutes.length < 2) return;
 
-    const longest = withRoutes.reduce((a,b) => b.route.totalMin > a.route.totalMin ? b : a);
+    const countOf = courierId => state.addresses.filter(a => a.courierId === courierId && a.status === 'ok').length;
+    const eligibleSources = withRoutes.filter(x => countOf(x.courier.id) > 1);
+    if (!eligibleSources.length) return;
+
+    const longest = eligibleSources.reduce((a,b) => b.route.totalMin > a.route.totalMin ? b : a);
     const shortest = withRoutes.reduce((a,b) => b.route.totalMin < a.route.totalMin ? b : a);
     const gap = longest.route.totalMin - shortest.route.totalMin;
     if (gap <= TIME_BALANCE_BUFFER_MIN || longest.courier.id === shortest.courier.id) return;
 
-    // don't let the longest courier drop below what count-balance requires
-    const totalAddrs = state.addresses.filter(a => a.status === 'ok').length;
-    const minAllowed = Math.max(1, Math.floor(totalAddrs / couriers.length - COUNT_BUFFER / 2));
     const longestAddrs = state.addresses.filter(a => a.courierId === longest.courier.id && a.status === 'ok');
-    if (longestAddrs.length <= minAllowed) return;
 
     // Only consider addresses that sit at the angular EDGE of the longest courier's own
     // sector, closest to the shortest courier's direction — never an address from deep
@@ -1491,27 +1511,46 @@ async function balanceRoutesByTime(couriers){
       return { addr: a, angularDist: diff };
     }).sort((a, b) => a.angularDist - b.angularDist);
 
-    // Always move the address sitting at the edge of the longest courier's sector that
-    // faces most directly toward the shortest courier — this is, by construction, the
-    // least disruptive address to relocate, whether the two sectors are adjacent or on
-    // opposite sides of the center. There's no absolute angle cutoff: ranking by angular
-    // distance already guarantees we pick the edge-most candidate, not one from deep
-    // inside the sector, regardless of how far apart the two sectors happen to be.
-    const candidate = ranked[0];
-    if (!candidate) return;
+    let madeProgress = false;
+    for (const candidate of ranked.slice(0, MAX_CANDIDATES_PER_BALANCE_PASS)){
+      const moveAddr = candidate.addr;
+      const prevCourierId = moveAddr.courierId;
+      const prevManuallyAssigned = moveAddr.manuallyAssigned;
+      const prevLongestRoute = state.routes[longest.courier.id];
+      const prevShortestRoute = state.routes[shortest.courier.id];
 
-    const moveAddr = candidate.addr;
-    moveAddr.courierId = shortest.courier.id;
-    moveAddr.manuallyAssigned = false;
+      moveAddr.courierId = shortest.courier.id;
+      moveAddr.manuallyAssigned = false;
 
-    const longestRemaining = state.addresses.filter(a => a.courierId === longest.courier.id && a.status === 'ok');
-    const shortestNew = state.addresses.filter(a => a.courierId === shortest.courier.id && a.status === 'ok');
-    if (longestRemaining.length){
-      await computeOptimizedRoute(longest.courier, longestRemaining);
-    } else {
-      delete state.routes[longest.courier.id];
+      const longestRemaining = state.addresses.filter(a => a.courierId === longest.courier.id && a.status === 'ok');
+      const shortestNew = state.addresses.filter(a => a.courierId === shortest.courier.id && a.status === 'ok');
+      if (longestRemaining.length){
+        await computeOptimizedRoute(longest.courier, longestRemaining);
+      } else {
+        delete state.routes[longest.courier.id];
+      }
+      await computeOptimizedRoute(shortest.courier, shortestNew);
+
+      const newLongestMin = state.routes[longest.courier.id] ? state.routes[longest.courier.id].totalMin : 0;
+      const newShortestMin = state.routes[shortest.courier.id].totalMin;
+      const newGap = Math.abs(newLongestMin - newShortestMin);
+
+      if (newGap < gap){
+        madeProgress = true;
+        break; // kept — re-evaluate longest/shortest fresh from the top on the next pass
+      }
+
+      // overshot or made no difference — revert to the exact prior state (cheap, no
+      // network calls needed since we still hold the previously computed routes) and
+      // try the next-best edge candidate instead
+      moveAddr.courierId = prevCourierId;
+      moveAddr.manuallyAssigned = prevManuallyAssigned;
+      if (prevLongestRoute) state.routes[longest.courier.id] = prevLongestRoute;
+      else delete state.routes[longest.courier.id];
+      state.routes[shortest.courier.id] = prevShortestRoute;
     }
-    await computeOptimizedRoute(shortest.courier, shortestNew);
+
+    if (!madeProgress) return; // no single-address move between the current extremes can help further
   }
 }
 
