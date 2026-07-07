@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/29614199/README.md)
+[README.md](https://github.com/user-attachments/files/29760075/README.md)
 # Trasee Curieri
 
 Aplicație web pentru planificarea automată a traseelor de livrare ale curierilor, cu repartizare optimizată a adreselor, calcul de intervale orare de livrare și export Excel.
