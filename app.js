@@ -1521,8 +1521,14 @@ async function balanceRoutesByTime(couriers){
       // Count balance beats time balance: reject this candidate outright (no OSRM calls
       // wasted) if taking it from the busier-by-time courier would push the stop-count gap
       // between these two couriers past the ceiling, even though it would help the time gap.
+      // Exception: if the gap is ALREADY past the ceiling (e.g. an upstream geographic split
+      // handed us a bad starting point), still allow moves that shrink it — otherwise this
+      // guard would freeze an already-broken split in place instead of letting it converge
+      // down toward the ceiling. Only moves that would make an over-ceiling gap equal or worse
+      // are rejected.
+      const countGapBefore = Math.abs(countOf(longest.courier.id) - countOf(shortest.courier.id));
       const countGapAfterMove = Math.abs((countOf(longest.courier.id) - 1) - (countOf(shortest.courier.id) + 1));
-      if (countGapAfterMove > MAX_COUNT_GAP_TIME_BALANCE) continue;
+      if (countGapAfterMove > MAX_COUNT_GAP_TIME_BALANCE && countGapAfterMove >= countGapBefore) continue;
 
       const prevCourierId = moveAddr.courierId;
       const prevManuallyAssigned = moveAddr.manuallyAssigned;
@@ -1684,8 +1690,14 @@ function sectorizeAddressesByCourier(addrs, couriers, centerLat, centerLng, minS
 
   // Enforce the count buffer by trading addresses across ADJACENT slot boundaries only —
   // this can shrink/grow a wedge slightly but never reassigns it to a non-neighboring slot.
+  // Cap is proportional to the address count, not a small fixed multiple of numSectors: each
+  // iteration moves exactly one address, and a skewed initial bearing split (e.g. two couriers
+  // starting close to each other, or close to the delivery centroid, makes their bearings
+  // numerically unstable) can require moving dozens of addresses to reach maxSize — a fixed
+  // `numSectors * 4` cap silently gave up after 8 moves regardless of how far off the split was.
   let iterations = 0;
-  while (iterations < numSectors * 4){
+  const maxIterations = Math.max(numSectors * 4, addrs.length * 2);
+  while (iterations < maxIterations){
     iterations++;
     const over = sectorsBySlot.map((s, i) => ({ i, size: s.length })).filter(s => s.size > maxSize).sort((a,b) => b.size - a.size)[0];
     if (!over) break;
