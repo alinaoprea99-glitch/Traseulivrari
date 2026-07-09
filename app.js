@@ -1448,16 +1448,18 @@ const TIME_BALANCE_BUFFER_MIN = 30; // couriers' total route time should end up 
  * shortest, recomputing both routes each time, until the gap is within the buffer or no
  * further beneficial move exists.
  *
- * Count balance is NOT enforced here on purpose — a courier whose stops are far apart
- * SHOULD end up with fewer of them for the same total time, and the user-facing goal for
- * this pass is equal finish times, not equal stop counts (the geographic split earlier
- * already gave every courier a reasonable starting count). The only floor kept is "never
- * fully empty a courier's route out from under them mid-balance" — everything else is
- * free to move. Without an explicit "eligible source" check, a courier that's already down
- * to its last address (or a courier the previous pass just emptied) would incorrectly keep
- * being picked as "longest" forever if its few remaining stops are still far apart, blocking
- * ALL further balancing — including between two completely different couriers whose own gap
- * has nothing to do with it.
+ * Count balance outranks time balance: this pass is only allowed to widen the gap in stop
+ * counts between the two couriers involved up to MAX_COUNT_GAP_TIME_BALANCE. A courier whose
+ * stops are far apart can still legitimately end up with fewer of them for the same total
+ * time — that's the intended exception — but earlier this pass had no ceiling at all, which
+ * let a handful of far-flung stops chain-drag the same courier's count down pass after pass
+ * (14 vs 24 in practice) chasing a 30min time gap that a few extra minutes of imbalance
+ * would have been an acceptable trade for. The floor "never fully empty a courier's route
+ * out from under them mid-balance" is kept for the same reason as before: without an
+ * explicit "eligible source" check, a courier already down to its last address (or one the
+ * previous pass just emptied) would incorrectly keep being picked as "longest" forever if
+ * its few remaining stops are still far apart, blocking ALL further balancing — including
+ * between two completely different couriers whose own gap has nothing to do with it.
  *
  * Each candidate move is verified, not assumed: since a single address can carry a big
  * chunk of drive time, moving it can overshoot and make the gap WORSE (the courier that
@@ -1468,6 +1470,7 @@ const TIME_BALANCE_BUFFER_MIN = 30; // couriers' total route time should end up 
  * without ever converging.
  */
 const MAX_CANDIDATES_PER_BALANCE_PASS = 3;
+const MAX_COUNT_GAP_TIME_BALANCE = 5; // hard ceiling on stop-count gap a time-balance move may create; count balance wins beyond this
 
 async function balanceRoutesByTime(couriers){
   const MAX_PASSES = 30;
@@ -1514,6 +1517,13 @@ async function balanceRoutesByTime(couriers){
     let madeProgress = false;
     for (const candidate of ranked.slice(0, MAX_CANDIDATES_PER_BALANCE_PASS)){
       const moveAddr = candidate.addr;
+
+      // Count balance beats time balance: reject this candidate outright (no OSRM calls
+      // wasted) if taking it from the busier-by-time courier would push the stop-count gap
+      // between these two couriers past the ceiling, even though it would help the time gap.
+      const countGapAfterMove = Math.abs((countOf(longest.courier.id) - 1) - (countOf(shortest.courier.id) + 1));
+      if (countGapAfterMove > MAX_COUNT_GAP_TIME_BALANCE) continue;
+
       const prevCourierId = moveAddr.courierId;
       const prevManuallyAssigned = moveAddr.manuallyAssigned;
       const prevLongestRoute = state.routes[longest.courier.id];
