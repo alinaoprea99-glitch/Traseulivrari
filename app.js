@@ -1432,6 +1432,12 @@ async function runAutoAssignAndRoute(){
   //    can be moved without breaking the count-balance guarantee from step 1).
   await balanceRoutesByTime(validCouriers);
 
+  // 4. Clean up local inefficiencies the earlier passes can't see: an address whose own
+  //    courier's route detours to reach it, sitting right next to a stop (or right on the
+  //    path) of a courier who was going to be in that area anyway. Uses the real, now-known
+  //    route data instead of pre-route approximations (bearing/centroid/distance-to-start).
+  await reassignByRouteInsertionSavings(validCouriers);
+
   renderCouriers();
   renderRouteSummary();
   redrawMap();
@@ -1449,7 +1455,7 @@ const TIME_BALANCE_BUFFER_MIN = 30; // couriers' total route time should end up 
  * further beneficial move exists.
  *
  * Count balance outranks time balance: this pass is only allowed to widen the gap in stop
- * counts between the two couriers involved up to MAX_COUNT_GAP_TIME_BALANCE. A courier whose
+ * counts between the two couriers involved up to MAX_COUNT_GAP. A courier whose
  * stops are far apart can still legitimately end up with fewer of them for the same total
  * time — that's the intended exception — but earlier this pass had no ceiling at all, which
  * let a handful of far-flung stops chain-drag the same courier's count down pass after pass
@@ -1470,7 +1476,7 @@ const TIME_BALANCE_BUFFER_MIN = 30; // couriers' total route time should end up 
  * without ever converging.
  */
 const MAX_CANDIDATES_PER_BALANCE_PASS = 3;
-const MAX_COUNT_GAP_TIME_BALANCE = 5; // hard ceiling on stop-count gap a time-balance move may create; count balance wins beyond this
+const MAX_COUNT_GAP = 5; // hard ceiling on stop-count gap between any two couriers — enforced both after geographic assignment (enforceCountBalance) and during time-balancing
 
 async function balanceRoutesByTime(couriers){
   const MAX_PASSES = 30;
@@ -1528,7 +1534,7 @@ async function balanceRoutesByTime(couriers){
       // are rejected.
       const countGapBefore = Math.abs(countOf(longest.courier.id) - countOf(shortest.courier.id));
       const countGapAfterMove = Math.abs((countOf(longest.courier.id) - 1) - (countOf(shortest.courier.id) + 1));
-      if (countGapAfterMove > MAX_COUNT_GAP_TIME_BALANCE && countGapAfterMove >= countGapBefore) continue;
+      if (countGapAfterMove > MAX_COUNT_GAP && countGapAfterMove >= countGapBefore) continue;
 
       const prevCourierId = moveAddr.courierId;
       const prevManuallyAssigned = moveAddr.manuallyAssigned;
@@ -1567,6 +1573,107 @@ async function balanceRoutesByTime(couriers){
     }
 
     if (!madeProgress) return; // no single-address move between the current extremes can help further
+  }
+}
+
+const ROUTE_SAVINGS_MAX_CANDIDATE_KM = 6; // cheap pre-filter only — real decision is the OSRM-verified time check below
+const ROUTE_SAVINGS_MIN_IMPROVEMENT_MIN = 1; // minimum combined-time improvement required to commit a move (avoids thrashing on noise)
+const ROUTE_SAVINGS_MAX_TRIES = 20; // hard cap on candidates tried per run, to bound OSRM calls
+
+/**
+ * Fixes local inefficiencies the earlier passes structurally can't see: sectorizeAddressesByCourier,
+ * refineSectorBoundaries and rescueDistanceOutliers all reason about an address's position relative
+ * to bearings, centroids, or a courier's START point — none of them know what a courier's actual,
+ * now-optimized route looks like. An address can sit right next to another courier's stop (or right
+ * on their path) purely because that courier was already headed that way for an unrelated reason
+ * (e.g. a stop further out in the same direction), and no pre-route heuristic can see that.
+ *
+ * This pass only trusts real data: for each candidate address, it actually moves it, recomputes
+ * both affected routes via OSRM, and checks whether the COMBINED total time of the two couriers
+ * involved went down. If not, it reverts — same "verify, don't assume" approach as balanceRoutesByTime,
+ * and for the same reason (a single stop can carry a disproportionate share of drive time, so the
+ * effect of moving it is not reliably predictable from distance alone).
+ *
+ * The candidate search itself stays cheap (haversine, no network calls): for every non-locked
+ * address, find the nearest address currently held by a DIFFERENT courier. Only addresses within
+ * ROUTE_SAVINGS_MAX_CANDIDATE_KM of such a neighbor are worth spending an OSRM round-trip on — the
+ * threshold is deliberately generous, since the real accept/reject decision is the verified time
+ * check, not this pre-filter.
+ *
+ * Respects the same MAX_COUNT_GAP guard as balanceRoutesByTime, with the same "allow if it improves
+ * an already-over-cap gap, block if it would make a healthy gap worse" rule — a route-efficiency
+ * fix should not be allowed to quietly undo the count-balance guarantee.
+ */
+async function reassignByRouteInsertionSavings(couriers){
+  const rejected = new Set(); // address ids tried and rejected this run — don't re-offer them
+  let tries = 0;
+
+  while (tries < ROUTE_SAVINGS_MAX_TRIES){
+    const withRoutes = couriers.filter(c => state.routes[c.id]);
+    if (withRoutes.length < 2) return;
+
+    const countOf = courierId => state.addresses.filter(a => a.courierId === courierId && a.status === 'ok').length;
+    const routedIds = new Set(withRoutes.map(c => c.id));
+    const candidates = state.addresses.filter(a =>
+      a.status === 'ok' && a.courierId != null && !a.manuallyAssigned &&
+      !rejected.has(a.id) && routedIds.has(a.courierId) && countOf(a.courierId) > 1
+    );
+
+    let best = null;
+    for (const addr of candidates){
+      let nearestOther = null, nearestDist = Infinity;
+      for (const other of state.addresses){
+        if (other.status !== 'ok' || other.courierId == null) continue;
+        if (other.courierId === addr.courierId || !routedIds.has(other.courierId)) continue;
+        const d = haversine(addr.lat, addr.lng, other.lat, other.lng);
+        if (d < nearestDist){ nearestDist = d; nearestOther = other; }
+      }
+      if (!nearestOther || nearestDist > ROUTE_SAVINGS_MAX_CANDIDATE_KM) continue;
+      if (!best || nearestDist < best.dist){
+        best = { addr, fromId: addr.courierId, toId: nearestOther.courierId, dist: nearestDist };
+      }
+    }
+
+    if (!best) return; // no remaining cross-courier pair close enough to be worth testing
+
+    tries++;
+    const fromCourier = couriers.find(c => c.id === best.fromId);
+    const toCourier = couriers.find(c => c.id === best.toId);
+
+    const countGapBefore = Math.abs(countOf(fromCourier.id) - countOf(toCourier.id));
+    const countGapAfter = Math.abs((countOf(fromCourier.id) - 1) - (countOf(toCourier.id) + 1));
+    if (countGapAfter > MAX_COUNT_GAP && countGapAfter >= countGapBefore){
+      rejected.add(best.addr.id);
+      continue;
+    }
+
+    const prevFromRoute = state.routes[fromCourier.id];
+    const prevToRoute = state.routes[toCourier.id];
+    const prevCourierId = best.addr.courierId;
+    const combinedBefore = (prevFromRoute ? prevFromRoute.totalMin : 0) + (prevToRoute ? prevToRoute.totalMin : 0);
+
+    best.addr.courierId = toCourier.id;
+
+    const fromRemaining = state.addresses.filter(a => a.courierId === fromCourier.id && a.status === 'ok');
+    const toNew = state.addresses.filter(a => a.courierId === toCourier.id && a.status === 'ok');
+
+    if (fromRemaining.length) await computeOptimizedRoute(fromCourier, fromRemaining);
+    else delete state.routes[fromCourier.id];
+    await computeOptimizedRoute(toCourier, toNew);
+
+    const combinedAfter = (state.routes[fromCourier.id] ? state.routes[fromCourier.id].totalMin : 0) + state.routes[toCourier.id].totalMin;
+
+    if (combinedBefore - combinedAfter >= ROUTE_SAVINGS_MIN_IMPROVEMENT_MIN){
+      continue; // kept — rescan fresh from the top, state has changed
+    }
+
+    // not worth it — revert to the exact prior state (cheap, no extra network calls) and
+    // mark this address as tried so it isn't offered again this run
+    best.addr.courierId = prevCourierId;
+    if (prevFromRoute) state.routes[fromCourier.id] = prevFromRoute;
+    else delete state.routes[fromCourier.id];
+    state.routes[toCourier.id] = prevToRoute;
+    rejected.add(best.addr.id);
   }
 }
 
@@ -1750,6 +1857,7 @@ function assignAddressesToNearestCourier(addrs, couriers){
 
   refineSectorBoundaries(free);
   rescueDistanceOutliers(free, couriers);
+  enforceCountBalance(free, couriers);
 }
 
 const BOUNDARY_SWAP_MAX_ITERATIONS = 4;
@@ -1846,6 +1954,40 @@ function rescueDistanceOutliers(free, couriers){
 
     addr.courierId = nearest.id;
   });
+}
+
+/**
+ * Final hard enforcement of count balance, run after all three geographic passes above.
+ * sectorizeAddressesByCourier's own COUNT_BUFFER trading already gets each courier within
+ * ~MAX_COUNT_GAP on its own, but refineSectorBoundaries and rescueDistanceOutliers both
+ * intentionally ignore that cap afterward (geographic coherence for the handful of addresses
+ * they each touch matters more to them than the running count) — their combined effect can
+ * still add up to a bigger gap than any single pass intended. This closes it deterministically
+ * instead of hoping the time-balance pass happens to need to move enough addresses to fix it
+ * as a side effect (it won't, if the two routes already happen to take similar total time
+ * despite the count gap): repeatedly hand the heaviest courier's address closest to the
+ * lightest courier's start point over to them, until every pair is within MAX_COUNT_GAP or
+ * the heaviest courier is down to its last stop.
+ */
+function enforceCountBalance(free, couriers){
+  if (couriers.length < 2) return;
+  const maxIterations = free.length * 2;
+  for (let i = 0; i < maxIterations; i++){
+    const counts = couriers
+      .map(c => ({ c, addrs: free.filter(a => a.courierId === c.id) }))
+      .sort((a, b) => b.addrs.length - a.addrs.length);
+    const over = counts[0];
+    const under = counts[counts.length - 1];
+    if (over.addrs.length - under.addrs.length <= MAX_COUNT_GAP || over.addrs.length <= 1) break;
+
+    let best = null, bestDist = Infinity;
+    over.addrs.forEach(a => {
+      const d = haversine(a.lat, a.lng, under.c.start.lat, under.c.start.lng);
+      if (d < bestDist){ bestDist = d; best = a; }
+    });
+    if (!best) break;
+    best.courierId = under.c.id;
+  }
 }
 
 function haversine(lat1, lon1, lat2, lon2){
