@@ -8,12 +8,26 @@
 // ===================================================================
 
 function decodeCourierData(encoded){
-  const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const json = new TextDecoder().decode(bytes);
+  const json = LZString.decompressFromEncodedURIComponent(encoded);
   return JSON.parse(json);
+}
+
+// Must stay in the exact same order as the array built in app.js's buildCourierPayload().
+const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart'];
+
+function addMinutesToTime(hhmm, minutesToAdd){
+  const [h, m] = hhmm.split(':').map(Number);
+  let total = (h * 60 + m + minutesToAdd) % (24 * 60);
+  if (total < 0) total += 24 * 60;
+  return `${Math.floor(total / 60).toString().padStart(2, '0')}:${(total % 60).toString().padStart(2, '0')}`;
+}
+
+/** Turns a compact [id, o, name, ...] array back into the named-field shape the rest of this file expects. */
+function stopFromArray(arr){
+  const s = {};
+  STOP_FIELDS.forEach((key, i) => { s[key] = arr[i]; });
+  s.winEnd = s.winStart ? addMinutesToTime(s.winStart, 120) : '';
+  return s;
 }
 
 function loadPayloadFromHash(){
@@ -22,7 +36,9 @@ function loadPayloadFromHash(){
   const encoded = params.get('d');
   if (!encoded) return null;
   try {
-    return decodeCourierData(encoded);
+    const payload = decodeCourierData(encoded);
+    if (Array.isArray(payload.stops)) payload.stops = payload.stops.map(stopFromArray);
+    return payload;
   } catch (e){
     console.error('Nu am putut citi datele traseului din link', e);
     return null;
