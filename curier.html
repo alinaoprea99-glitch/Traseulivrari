@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Traseul meu — Curier</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  --paper:#F7F5F0;
+  --ink:#1A2B2E;
+  --ink-soft:#5B6B6D;
+  --route:#FF5A1F;
+  --route-soft:#FFE4D6;
+  --depot:#2D6A4F;
+  --depot-soft:#DCEEE3;
+  --line:#D4CFC4;
+  --line-soft:#E5E1D8;
+  --white:#FFFFFF;
+  --danger:#C23B22;
+  --danger-soft:#FCEFEC;
+  --radius:3px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  font-family:'Inter',sans-serif;
+  background:var(--paper);
+  color:var(--ink);
+  font-size:14.5px;
+  line-height:1.45;
+  padding-bottom:24px;
+}
+
+.head{
+  position:sticky;
+  top:0;
+  z-index:10;
+  background:var(--paper);
+  border-bottom:1px solid var(--line);
+  padding:16px 16px 14px;
+}
+.head-title{
+  font-family:'Space Grotesk',sans-serif;
+  font-weight:700;
+  font-size:19px;
+}
+.head-sub{
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px;
+  color:var(--ink-soft);
+  text-transform:uppercase;
+  letter-spacing:0.04em;
+  margin-top:2px;
+}
+.progress-bar{
+  height:7px;
+  background:var(--line-soft);
+  border-radius:6px;
+  overflow:hidden;
+  margin-top:10px;
+}
+.progress-fill{
+  height:100%;
+  background:var(--depot);
+  border-radius:6px;
+  transition:width .2s;
+}
+.progress-label{
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px;
+  color:var(--ink-soft);
+  margin-top:6px;
+}
+
+.stop-list{padding:14px 12px 4px;}
+
+.stop-card{
+  background:var(--white);
+  border:1px solid var(--line);
+  border-left:4px solid var(--line);
+  border-radius:var(--radius);
+  padding:12px 13px;
+  margin-bottom:12px;
+}
+.stop-card.status-delivered{border-left-color:var(--depot); background:var(--depot-soft);}
+.stop-card.status-failed{border-left-color:var(--danger); background:var(--danger-soft);}
+
+.stop-head{
+  display:flex;
+  align-items:flex-start;
+  gap:9px;
+}
+.stop-badge{
+  flex-shrink:0;
+  width:22px; height:22px;
+  border-radius:50%;
+  background:var(--ink);
+  color:var(--paper);
+  font-family:'JetBrains Mono',monospace;
+  font-weight:600;
+  font-size:11.5px;
+  display:flex; align-items:center; justify-content:center;
+}
+.stop-title{font-weight:600; font-size:15px; flex:1;}
+.stop-addr{font-size:12.5px; color:var(--ink-soft); margin-top:2px; margin-left:31px;}
+.stop-line{font-size:12.5px; color:var(--ink-soft); margin-top:3px; margin-left:31px;}
+
+.chip-row{margin-left:31px; margin-top:6px; display:flex; flex-wrap:wrap; gap:5px;}
+.chip{
+  display:inline-block;
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px;
+  font-weight:600;
+  border-radius:3px;
+  padding:2px 7px;
+}
+.chip-window{color:var(--depot); background:var(--depot-soft);}
+.chip-payment{color:var(--ink); background:var(--line-soft);}
+.chip-payment.cod{color:#B5400E; background:var(--route-soft);}
+
+.action-row{
+  display:flex;
+  gap:7px;
+  margin-top:10px;
+  margin-left:31px;
+  flex-wrap:wrap;
+}
+.pill-btn{
+  font-size:12.5px;
+  font-weight:600;
+  text-decoration:none;
+  color:var(--ink);
+  background:var(--white);
+  border:1px solid var(--line);
+  border-radius:20px;
+  padding:6px 12px;
+}
+.pill-btn:active{background:var(--line-soft);}
+
+.status-row{
+  display:flex;
+  gap:8px;
+  margin-top:11px;
+}
+.status-btn{
+  flex:1;
+  font-family:'Inter',sans-serif;
+  font-weight:600;
+  font-size:13px;
+  padding:10px 8px;
+  border-radius:var(--radius);
+  border:1px solid var(--line);
+  background:var(--white);
+  color:var(--ink-soft);
+}
+.status-btn.deliver.active{background:var(--depot); border-color:var(--depot); color:var(--white);}
+.status-btn.fail.active{background:var(--danger); border-color:var(--danger); color:var(--white);}
+
+.foot-note{
+  text-align:center;
+  font-size:11.5px;
+  color:var(--ink-soft);
+  padding:10px 16px 4px;
+}
+
+.empty-state{
+  text-align:center;
+  padding:60px 24px;
+}
+.empty-state .es-icon{font-size:32px; margin-bottom:10px;}
+.empty-state .es-title{font-weight:600; font-size:15px;}
+.empty-state .es-sub{font-size:13px; color:var(--ink-soft); margin-top:6px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="curier.js"></script>
+</body>
+</html>
