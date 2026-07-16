@@ -1487,7 +1487,12 @@ async function balanceRoutesByTime(couriers){
     if (withRoutes.length < 2) return;
 
     const countOf = courierId => state.addresses.filter(a => a.courierId === courierId && a.status === 'ok').length;
-    const eligibleSources = withRoutes.filter(x => countOf(x.courier.id) > 1);
+    // A courier whose every stop was manually reassigned by the user has nothing this pass
+    // is allowed to move — excluded from "longest" candidacy entirely, rather than picked
+    // and then failing to find any movable address, so balancing still proceeds against the
+    // next-worst courier it CAN actually act on.
+    const hasMovableAddr = courierId => state.addresses.some(a => a.courierId === courierId && a.status === 'ok' && !a.manuallyAssigned);
+    const eligibleSources = withRoutes.filter(x => countOf(x.courier.id) > 1 && hasMovableAddr(x.courier.id));
     if (!eligibleSources.length) return;
 
     const longest = eligibleSources.reduce((a,b) => b.route.totalMin > a.route.totalMin ? b : a);
@@ -1495,6 +1500,9 @@ async function balanceRoutesByTime(couriers){
     const gap = longest.route.totalMin - shortest.route.totalMin;
     if (gap <= TIME_BALANCE_BUFFER_MIN || longest.courier.id === shortest.courier.id) return;
 
+    // kept as the full set (including manually-locked stops) for the sector-center/bearing
+    // math below — that's a geographic reference point and should reflect ALL of the
+    // courier's real stops, even ones the pass below isn't allowed to move.
     const longestAddrs = state.addresses.filter(a => a.courierId === longest.courier.id && a.status === 'ok');
 
     // Only consider addresses that sit at the angular EDGE of the longest courier's own
@@ -1508,9 +1516,11 @@ async function balanceRoutesByTime(couriers){
       shortest.courier.start.lat - sectorCenterLat
     ) * 180 / Math.PI;
 
-    // rank longest's addresses by how close their own bearing (from their sector center)
-    // is to the direction of the shortest courier — the "edge facing" candidates come first
-    const ranked = longestAddrs.map(a => {
+    // rank longest's MOVABLE addresses (never a manually-reassigned one — that lock must
+    // survive "Repartizează automat" the same way it already does in the other two passes)
+    // by how close their own bearing (from their sector center) is to the direction of the
+    // shortest courier — the "edge facing" candidates come first
+    const ranked = longestAddrs.filter(a => !a.manuallyAssigned).map(a => {
       const bearing = Math.atan2(
         (a.lng - sectorCenterLng) * Math.cos(sectorCenterLat * Math.PI / 180),
         a.lat - sectorCenterLat
