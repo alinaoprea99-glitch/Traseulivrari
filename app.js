@@ -2548,7 +2548,30 @@ function courierLinkHostWarning(){
   return null;
 }
 
-function showSendToCourierModal(courierId){
+/**
+ * Shortens a link via da.gd (free, no API key, CORS-enabled — unlike most link shorteners,
+ * which block browser-side requests). A long link often gets mangled by chat apps: WhatsApp
+ * in particular can auto-linkify only the first stretch of a very long URL and dump the rest
+ * as plain text, which breaks the link entirely. A short link stays well under any such
+ * truncation threshold. Falls back to the original long link if da.gd is unreachable or slow,
+ * so sending a route never hard-fails just because a third-party service is down.
+ */
+async function shortenLink(longUrl){
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(`https://da.gd/shorten?url=${encodeURIComponent(longUrl)}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!res.ok) return null;
+    const text = (await res.text()).trim();
+    return text.startsWith('http') ? text : null;
+  } catch (e){
+    console.error('Scurtarea link-ului a eșuat, folosesc link-ul complet', e);
+    return null;
+  }
+}
+
+async function showSendToCourierModal(courierId){
   const courier = state.couriers.find(c => c.id === courierId);
   const route = state.routes[courierId];
   if (!courier || !route){
@@ -2556,7 +2579,7 @@ function showSendToCourierModal(courierId){
     return;
   }
 
-  const link = buildCourierLink(courier, route);
+  const longLink = buildCourierLink(courier, route);
   const warning = courierLinkHostWarning();
 
   const overlay = document.createElement('div');
@@ -2567,15 +2590,33 @@ function showSendToCourierModal(courierId){
       <div class="hint" style="margin-bottom:4px;">Curierul scanează codul sau deschide link-ul pe telefon — vede opririle lui, în ordine, și poate bifa livrat/nelivrat direct acolo. Bifele rămân pe telefonul lui; nu apar automat aici.</div>
       ${warning ? `<div class="hint" style="color:var(--danger); margin-top:8px;">⚠ ${warning}</div>` : ''}
       <div class="qr-wrap" id="courierQrWrap"></div>
-      <div class="link-copy-row">
-        <input type="text" id="courierLinkInput" readonly value="${escapeHtml(link)}">
+      <div class="loading-row" id="linkLoadingRow" style="justify-content:center; margin-top:10px;"><span class="spinner sp-dark"></span><span>Se scurtează linkul…</span></div>
+      <div class="link-copy-row" id="linkCopyRow" style="display:none;">
+        <input type="text" id="courierLinkInput" readonly value="">
         <button class="btn btn-sm" id="copyCourierLinkBtn">Copiază</button>
       </div>
-      <button class="btn btn-accent btn-sm btn-block" id="waCourierLinkBtn" style="margin-top:10px;">Trimite pe WhatsApp</button>
+      <button class="btn btn-accent btn-sm btn-block" id="waCourierLinkBtn" style="margin-top:10px;" disabled>Trimite pe WhatsApp</button>
       <button class="btn btn-ghost btn-sm btn-block" id="closeCourierModalBtn" style="margin-top:8px;">Închide</button>
     </div>
   `;
   document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.getElementById('closeCourierModalBtn').addEventListener('click', close);
+
+  const shortLink = await shortenLink(longLink);
+  if (!overlay.isConnected) return; // modal was closed while the shortening request was in flight
+  const link = shortLink || longLink;
+
+  document.getElementById('linkLoadingRow').style.display = 'none';
+  document.getElementById('linkCopyRow').style.display = 'flex';
+  document.getElementById('courierLinkInput').value = link;
+  const waBtn = document.getElementById('waCourierLinkBtn');
+  waBtn.disabled = false;
+  if (!shortLink){
+    showToast('Nu am putut scurta linkul (serviciu extern indisponibil) — folosesc linkul complet.', true);
+  }
 
   const qrWrap = document.getElementById('courierQrWrap');
   try {
@@ -2588,10 +2629,6 @@ function showSendToCourierModal(courierId){
     qrWrap.innerHTML = `<div class="hint">Traseu prea mare pentru cod QR — folosește link-ul de mai jos.</div>`;
   }
 
-  const close = () => overlay.remove();
-  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-  document.getElementById('closeCourierModalBtn').addEventListener('click', close);
-
   document.getElementById('copyCourierLinkBtn').addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(link);
@@ -2603,7 +2640,7 @@ function showSendToCourierModal(courierId){
     showToast('Link copiat.');
   });
 
-  document.getElementById('waCourierLinkBtn').addEventListener('click', () => {
+  waBtn.addEventListener('click', () => {
     const text = encodeURIComponent(`Traseul tău de azi (${courier.name}):\n${link}`);
     window.open(`https://wa.me/?text=${text}`, '_blank');
   });
