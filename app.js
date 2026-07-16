@@ -2491,34 +2491,36 @@ function wireRouteStopControls(container){
 // to this dispatcher view.)
 // -------------------------------------------------------------------
 
-/** UTF-8-safe, URL-safe base64 encoding (handles ă/â/î/ș/ț in addresses/notes). */
+/**
+ * Compresses the route JSON before it goes into the URL — WhatsApp (and some other chat
+ * apps) can silently truncate a very long link when auto-linkifying it in a message, which
+ * breaks the courier's link with no clear error. LZString typically cuts this payload
+ * roughly in half, since the same field names repeat for every stop.
+ */
 function encodeCourierData(obj){
-  const bytes = new TextEncoder().encode(JSON.stringify(obj));
-  let binary = '';
-  bytes.forEach(b => { binary += String.fromCharCode(b); });
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return LZString.compressToEncodedURIComponent(JSON.stringify(obj));
 }
 
+/**
+ * Stops are encoded as arrays, not objects — repeating "id","name","phone"... for every
+ * single stop bloats the link a lot more than it looks, since it survives compression too
+ * (LZString still has to reference each key's first occurrence). Field order here MUST
+ * stay in sync with STOP_FIELDS in curier.js. winEnd isn't sent at all — it's always
+ * winStart + 2h (see computeDeliveryWindows), so curier.js derives it instead of paying
+ * for it in the link. Coordinates are rounded to 6 decimals (~10cm), since Nominatim
+ * returns much more precision than the link needs.
+ */
 function buildCourierPayload(courier, route){
   const stops = route.order.map((addrId, idx) => {
     const a = state.addresses.find(ad => ad.id === addrId);
     if (!a) return null;
     const win = route.windows ? route.windows[addrId] : null;
-    return {
-      id: a.id,
-      o: idx + 1,
-      name: a.clientName || '',
-      phone: a.phone || '',
-      addr: a.raw,
-      details: a.details || '',
-      note: a.customerNote || '',
-      amount: a.amount,
-      payment: a.paymentMethod || '',
-      lat: a.lat,
-      lng: a.lng,
-      winStart: win ? win.windowStart : '',
-      winEnd: win ? win.windowEnd : ''
-    };
+    return [
+      a.id, idx + 1, a.clientName || '', a.phone || '', a.raw, a.details || '', a.customerNote || '',
+      a.amount, a.paymentMethod || '',
+      Math.round(a.lat * 1e6) / 1e6, Math.round(a.lng * 1e6) / 1e6,
+      win ? win.windowStart : ''
+    ];
   }).filter(Boolean);
 
   return {
