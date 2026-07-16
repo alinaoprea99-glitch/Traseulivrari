@@ -594,18 +594,19 @@ input[type=file]{display:none;}
 }
 
 .send-courier-btn{
-  border:none;
-  background:none;
-  color:var(--ink-soft);
+  border:1px solid var(--route);
+  background:var(--route-soft);
+  color:#B5400E;
   font-family:'Inter',sans-serif;
   font-size:11.5px;
   font-weight:600;
   cursor:pointer;
-  padding:2px 0;
+  padding:4px 9px;
+  border-radius:12px;
   margin-left:auto;
   white-space:nowrap;
 }
-.send-courier-btn:hover{color:var(--route); text-decoration:underline;}
+.send-courier-btn:hover{background:var(--route); border-color:var(--route); color:var(--white);}
 .qr-wrap{
   display:flex;
   justify-content:center;
@@ -901,6 +902,6 @@ input[type=file]{display:none;}
 
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>
