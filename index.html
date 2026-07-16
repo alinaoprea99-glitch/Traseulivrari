@@ -13,6 +13,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
 
 <style>
 :root{
@@ -590,6 +591,46 @@ input[type=file]{display:none;}
   font-weight:600;
   font-size:15px;
   margin-bottom:14px;
+}
+
+.send-courier-btn{
+  border:none;
+  background:none;
+  color:var(--ink-soft);
+  font-family:'Inter',sans-serif;
+  font-size:11.5px;
+  font-weight:600;
+  cursor:pointer;
+  padding:2px 0;
+  margin-left:auto;
+  white-space:nowrap;
+}
+.send-courier-btn:hover{color:var(--route); text-decoration:underline;}
+.qr-wrap{
+  display:flex;
+  justify-content:center;
+  padding:14px 0 6px;
+}
+.qr-wrap canvas, .qr-wrap img{
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  background:#fff;
+  padding:8px;
+}
+.link-copy-row{
+  display:flex;
+  gap:6px;
+  margin-top:10px;
+}
+.link-copy-row input{
+  flex:1;
+  padding:8px 10px;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px;
+  background:var(--white);
+  color:var(--ink-soft);
 }
 
 .verified-db-row{
