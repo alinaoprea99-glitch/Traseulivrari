@@ -2286,9 +2286,10 @@ function renderRouteSummary(){
       <div style="display:flex; align-items:center; gap:7px; margin-bottom:4px;">
         <span class="courier-dot" style="background:${c.color}"></span>
         <span style="font-weight:600; font-size:13px;">${escapeHtml(c.name)}</span>
-        <span style="margin-left:auto; font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--ink-soft);">
+        <span style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--ink-soft);">
           ${route.totalKm.toFixed(1)} km · ${formatMinutes(route.totalMin)}
         </span>
+        <button class="send-courier-btn" data-send-courier="${c.id}">📱 trimite curierului</button>
       </div>
       ${totalToCollect > 0 ? `
         <div style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--ink-soft); margin-bottom:8px; padding-left:18px;">
@@ -2352,6 +2353,10 @@ function renderRouteSummary(){
   });
 
   wireRouteStopControls(container);
+
+  container.querySelectorAll('[data-send-courier]').forEach(btn => {
+    btn.addEventListener('click', () => showSendToCourierModal(parseInt(btn.dataset.sendCourier)));
+  });
 }
 
 function renderBulkMoveBar(container){
@@ -2423,6 +2428,130 @@ function wireRouteStopControls(container){
       redrawMap();
     });
   }
+}
+
+// -------------------------------------------------------------------
+// SEND TO COURIER — mobile link (no backend involved: the courier's
+// stops are encoded entirely into the URL hash of curier.html, which
+// the courier opens on their own phone. Delivered/not-delivered marks
+// are saved only in that phone's localStorage — they do NOT sync back
+// to this dispatcher view.)
+// -------------------------------------------------------------------
+
+/** UTF-8-safe, URL-safe base64 encoding (handles ă/â/î/ș/ț in addresses/notes). */
+function encodeCourierData(obj){
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  let binary = '';
+  bytes.forEach(b => { binary += String.fromCharCode(b); });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function buildCourierPayload(courier, route){
+  const stops = route.order.map((addrId, idx) => {
+    const a = state.addresses.find(ad => ad.id === addrId);
+    if (!a) return null;
+    const win = route.windows ? route.windows[addrId] : null;
+    return {
+      id: a.id,
+      o: idx + 1,
+      name: a.clientName || '',
+      phone: a.phone || '',
+      addr: a.raw,
+      details: a.details || '',
+      note: a.customerNote || '',
+      amount: a.amount,
+      payment: a.paymentMethod || '',
+      lat: a.lat,
+      lng: a.lng,
+      winStart: win ? win.windowStart : '',
+      winEnd: win ? win.windowEnd : ''
+    };
+  }).filter(Boolean);
+
+  return {
+    routeId: `${courier.id}_${new Date().toISOString().slice(0, 10)}`,
+    courier: courier.name,
+    date: new Date().toISOString().slice(0, 10),
+    stops
+  };
+}
+
+function buildCourierLink(courier, route){
+  const encoded = encodeCourierData(buildCourierPayload(courier, route));
+  const base = location.href.split('#')[0].replace(/index\.html?$/i, '').replace(/\/?$/, '/');
+  return `${base}curier.html#d=${encoded}`;
+}
+
+/** Flags setups where the generated link can't actually be opened from a different phone. */
+function courierLinkHostWarning(){
+  if (location.protocol === 'file:'){
+    return 'Aplicația e deschisă direct dintr-un fișier local — linkul NU va funcționa pe telefonul curierului. Găzduiește aplicația online (ex: GitHub Pages, Netlify) sau pe un server accesibil din rețea.';
+  }
+  if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)){
+    return 'Aplicația rulează pe "localhost" — linkul funcționează doar dacă curierul e pe ACEEAȘI rețea Wi-Fi și înlocuiește "localhost" cu IP-ul acestui calculator. Pentru acces de oriunde, găzduiește aplicația online.';
+  }
+  return null;
+}
+
+function showSendToCourierModal(courierId){
+  const courier = state.couriers.find(c => c.id === courierId);
+  const route = state.routes[courierId];
+  if (!courier || !route){
+    showToast('Nu există traseu pentru acest curier.', true);
+    return;
+  }
+
+  const link = buildCourierLink(courier, route);
+  const warning = courierLinkHostWarning();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box" style="max-width:340px;">
+      <div class="modal-title">Trimite traseul către ${escapeHtml(courier.name)}</div>
+      <div class="hint" style="margin-bottom:4px;">Curierul scanează codul sau deschide link-ul pe telefon — vede opririle lui, în ordine, și poate bifa livrat/nelivrat direct acolo. Bifele rămân pe telefonul lui; nu apar automat aici.</div>
+      ${warning ? `<div class="hint" style="color:var(--danger); margin-top:8px;">⚠ ${warning}</div>` : ''}
+      <div class="qr-wrap" id="courierQrWrap"></div>
+      <div class="link-copy-row">
+        <input type="text" id="courierLinkInput" readonly value="${escapeHtml(link)}">
+        <button class="btn btn-sm" id="copyCourierLinkBtn">Copiază</button>
+      </div>
+      <button class="btn btn-accent btn-sm btn-block" id="waCourierLinkBtn" style="margin-top:10px;">Trimite pe WhatsApp</button>
+      <button class="btn btn-ghost btn-sm btn-block" id="closeCourierModalBtn" style="margin-top:8px;">Închide</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const qrWrap = document.getElementById('courierQrWrap');
+  try {
+    const qr = qrcode(0, 'L'); // typeNumber 0 = auto-pick smallest version that fits the data
+    qr.addData(link);
+    qr.make();
+    qrWrap.innerHTML = qr.createImgTag(4, 8);
+  } catch (e){
+    console.error('QR generation failed (route probably too large for a QR code)', e);
+    qrWrap.innerHTML = `<div class="hint">Traseu prea mare pentru cod QR — folosește link-ul de mai jos.</div>`;
+  }
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.getElementById('closeCourierModalBtn').addEventListener('click', close);
+
+  document.getElementById('copyCourierLinkBtn').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+    } catch (e){
+      const input = document.getElementById('courierLinkInput');
+      input.select();
+      document.execCommand('copy');
+    }
+    showToast('Link copiat.');
+  });
+
+  document.getElementById('waCourierLinkBtn').addEventListener('click', () => {
+    const text = encodeURIComponent(`Traseul tău de azi (${courier.name}):\n${link}`);
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  });
 }
 
 /**
