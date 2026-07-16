@@ -2094,6 +2094,49 @@ function nearestNeighborOrder(matrix, numPoints){
   return order;
 }
 
+/**
+ * Runs 2-opt from the nearest-neighbor seed AND several randomized starting orders,
+ * keeping whichever converges to the shortest total time. A single nearest-neighbor
+ * seed can lead 2-opt into a local optimum that skips over a cluster of stops sitting
+ * geometrically "on the way" between two others — visible on the map as an unnecessary
+ * long round-trip leg to a far stop instead of a route that flows through the stops in
+ * between. Trying several independent random starting orders and keeping the best
+ * result catches those cases. All restarts reuse the SAME already-fetched duration
+ * matrix, so this costs zero extra network calls — only cheap local computation, well
+ * under a second for the ~10-30 stop routes this app plans for.
+ */
+const TWO_OPT_RANDOM_RESTARTS = 40;
+
+function optimizeOrderMultiStart(matrix, numPoints){
+  const routeLength = (ord) => {
+    let total = 0;
+    for (let i = 0; i < ord.length - 1; i++) total += matrix[ord[i]][ord[i+1]];
+    return total;
+  };
+
+  let bestOrder = twoOptOptimize(matrix, nearestNeighborOrder(matrix, numPoints));
+  let bestCost = routeLength(bestOrder);
+
+  const middleIndices = [];
+  for (let i = 1; i < numPoints - 1; i++) middleIndices.push(i);
+
+  for (let r = 0; r < TWO_OPT_RANDOM_RESTARTS; r++){
+    const shuffled = middleIndices.slice();
+    for (let i = shuffled.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const candidateOrder = twoOptOptimize(matrix, [0, ...shuffled, numPoints - 1]);
+    const candidateCost = routeLength(candidateOrder);
+    if (candidateCost < bestCost){
+      bestCost = candidateCost;
+      bestOrder = candidateOrder;
+    }
+  }
+
+  return bestOrder;
+}
+
 async function computeOptimizedRoute(courier, stops){
   const end = courier.sameAsStart || courier.end.status !== 'ok' ? courier.start : courier.end;
   const points = [courier.start, ...stops.map(s => ({lat:s.lat,lng:s.lng})), end];
@@ -2103,10 +2146,10 @@ async function computeOptimizedRoute(courier, stops){
     const matrix = await fetchDurationMatrix(points);
     if (!matrix) throw new Error('Table service returned no data');
 
-    // 2. Find a good visiting order locally: nearest-neighbor seed, refined by 2-opt.
-    //    Indices 0 and (points.length-1) stay fixed as start/end throughout.
-    const seedOrder = nearestNeighborOrder(matrix, points.length);
-    const optimizedOrder = twoOptOptimize(matrix, seedOrder);
+    // 2. Find a good visiting order locally: nearest-neighbor seed plus several random
+    //    restarts, refined by 2-opt, keeping the shortest result found. Indices 0 and
+    //    (points.length-1) stay fixed as start/end throughout.
+    const optimizedOrder = optimizeOrderMultiStart(matrix, points.length);
 
     // optimizedOrder is a list of point-indices; translate the middle ones back to stops
     const orderedIds = optimizedOrder.slice(1, -1).map(idx => stops[idx - 1].id);
