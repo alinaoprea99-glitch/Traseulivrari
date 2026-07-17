@@ -1562,6 +1562,7 @@ function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 // -------------------------------------------------------------------
 function initRoutePanel(){
   document.getElementById('autoAssignBtn').addEventListener('click', runAutoAssignAndRoute);
+  document.getElementById('historyBtn').addEventListener('click', showHistoryModal);
 }
 
 async function runAutoAssignAndRoute(){
@@ -1623,8 +1624,113 @@ async function runAutoAssignAndRoute(){
   redrawMap();
   updateMapTopBar();
   document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+  pushHistorySnapshot();
   showToast('Trasee generate.');
   switchToTab('panel-trasee');
+}
+
+// -------------------------------------------------------------------
+// ROUTE HISTORY — automatic snapshot of the last MAX_HISTORY_ENTRIES successful
+// "Repartizează automat" runs, so an earlier version of today's routes is always one
+// click away (e.g. after a bad manual edit, or wanting to compare two attempts) without
+// needing to have manually saved a file beforehand.
+// -------------------------------------------------------------------
+const HISTORY_STORAGE_KEY = 'trasee-curieri:history';
+const MAX_HISTORY_ENTRIES = 5;
+
+function pushHistorySnapshot(){
+  try {
+    const history = loadHistory();
+    history.unshift({
+      savedAt: new Date().toISOString(),
+      couriers: state.couriers,
+      nextCourierId: state.nextCourierId,
+      addresses: state.addresses,
+      nextAddrId: state.nextAddrId,
+      routes: state.routes
+    });
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history.slice(0, MAX_HISTORY_ENTRIES)));
+  } catch (e){
+    console.error('Could not save route history', e);
+  }
+}
+
+function loadHistory(){
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    const history = raw ? JSON.parse(raw) : [];
+    return Array.isArray(history) ? history : [];
+  } catch (e){
+    console.error('Could not load route history', e);
+    return [];
+  }
+}
+
+function restoreHistorySnapshot(index){
+  const history = loadHistory();
+  const snap = history[index];
+  if (!snap) return;
+  if (!confirm('Sigur vrei să restaurezi acest traseu? Se va suprascrie tot ce ai acum (curieri, adrese, trasee).')) return;
+
+  state.couriers = snap.couriers;
+  state.nextCourierId = snap.nextCourierId || (snap.couriers.length ? Math.max(...snap.couriers.map(c => c.id)) + 1 : 1);
+  state.addresses = snap.addresses;
+  state.nextAddrId = snap.nextAddrId || (snap.addresses.length ? Math.max(...snap.addresses.map(a => a.id)) + 1 : 1);
+  state.routes = (snap.routes && typeof snap.routes === 'object' && !Array.isArray(snap.routes)) ? snap.routes : {};
+  state.routeSelection.clear();
+
+  renderCouriers();
+  renderAddresses();
+  renderRouteSummary();
+  maybeShowGeocodeButton();
+  document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+  redrawMap();
+  fitMapToAll();
+  showToast('Traseu restaurat din istoric.');
+}
+
+function showHistoryModal(){
+  const history = loadHistory();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box" style="max-width:380px;">
+      <div class="modal-title">Istoric trasee generate</div>
+      ${history.length ? `
+        <div class="hint" style="margin-bottom:10px;">Ultimele ${history.length} repartizări automate. Restaurarea suprascrie starea curentă.</div>
+        <div id="historyList">
+          ${history.map((h, i) => {
+            const courierCount = h.couriers.length;
+            const addrCount = h.addresses.length;
+            const routedCount = Object.values(h.routes || {}).reduce((s, r) => s + r.order.length, 0);
+            const when = new Date(h.savedAt).toLocaleString('ro-RO', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+            return `
+              <div class="verified-db-row">
+                <div class="verified-db-text">
+                  <div class="verified-db-addr">${escapeHtml(when)}</div>
+                  <div class="verified-db-coords">${courierCount} curieri · ${routedCount}/${addrCount} adrese repartizate</div>
+                </div>
+                <button class="btn btn-sm" data-restore-history="${i}">Restaurează</button>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : `<div class="hint">Nu există încă niciun traseu generat în istoric — apare aici după prima „Repartizează automat".</div>`}
+      <button class="btn btn-ghost btn-sm btn-block" id="closeHistoryBtn" style="margin-top:14px;">Închide</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.getElementById('closeHistoryBtn').addEventListener('click', close);
+  overlay.querySelectorAll('[data-restore-history]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      restoreHistorySnapshot(parseInt(btn.dataset.restoreHistory));
+      close();
+    });
+  });
 }
 
 const TIME_BALANCE_BUFFER_MIN = 30; // couriers' total route time should end up within ~30min of each other
@@ -3158,7 +3264,79 @@ function fitMapToAll(){
 // -------------------------------------------------------------------
 // ACTION BAR — reset / export
 // -------------------------------------------------------------------
+/**
+ * Manual backup/restore, on top of the automatic localStorage persistence — a file the
+ * dispatcher controls directly, so work survives even clearing browser data, switching
+ * computers, or just wanting an explicit checkpoint before doing something risky. Saves
+ * the full working state (not the flattened Excel export), so loading it back needs no
+ * re-geocoding or re-routing — routes, positions and manual assignments come back exactly
+ * as they were.
+ */
+function saveStateToFile(){
+  const snapshot = {
+    savedAt: new Date().toISOString(),
+    couriers: state.couriers,
+    nextCourierId: state.nextCourierId,
+    addresses: state.addresses,
+    nextAddrId: state.nextAddrId,
+    routes: state.routes
+  };
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `trasee_curieri_stare_${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast('Starea a fost salvată într-un fișier.');
+}
+
+function loadStateFromFile(file){
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data || !Array.isArray(data.couriers) || !Array.isArray(data.addresses)){
+        showToast('Fișierul nu conține o stare validă.', true);
+        return;
+      }
+      if (!confirm('Sigur vrei să încarci această stare? Se va suprascrie tot ce ai acum (curieri, adrese, trasee).')) return;
+
+      state.couriers = data.couriers;
+      state.nextCourierId = data.nextCourierId || (data.couriers.length ? Math.max(...data.couriers.map(c => c.id)) + 1 : 1);
+      state.addresses = data.addresses;
+      state.nextAddrId = data.nextAddrId || (data.addresses.length ? Math.max(...data.addresses.map(a => a.id)) + 1 : 1);
+      state.routes = (data.routes && typeof data.routes === 'object' && !Array.isArray(data.routes)) ? data.routes : {};
+      state.routeSelection.clear();
+
+      renderCouriers();
+      renderAddresses();
+      renderRouteSummary();
+      maybeShowGeocodeButton();
+      document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+      redrawMap();
+      fitMapToAll();
+      showToast(`Stare încărcată${data.savedAt ? ' (salvată ' + new Date(data.savedAt).toLocaleString('ro-RO') + ')' : ''}.`);
+    } catch (err){
+      console.error('Nu am putut citi fișierul de stare', err);
+      showToast('Fișierul nu poate fi citit — verifică dacă e fișierul corect.', true);
+    }
+  };
+  reader.readAsText(file);
+}
+
 function initActionBar(){
+  document.getElementById('saveStateBtn').addEventListener('click', saveStateToFile);
+  document.getElementById('loadStateBtn').addEventListener('click', () => {
+    document.getElementById('loadStateInput').click();
+  });
+  document.getElementById('loadStateInput').addEventListener('change', (e) => {
+    if (e.target.files.length) loadStateFromFile(e.target.files[0]);
+    e.target.value = '';
+  });
+
   document.getElementById('resetBtn').addEventListener('click', () => {
     if (!confirm('Sigur vrei să resetezi tot? Se vor șterge curierii salvați, adresele și traseele.')) return;
     state.couriers = [];
