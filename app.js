@@ -614,6 +614,13 @@ function initAddressPanel(){
   document.getElementById('geocodeBtn').addEventListener('click', () => geocodeAllPending());
   document.getElementById('manageVerifiedDbBtn').addEventListener('click', () => showVerifiedDbManager());
   updateVerifiedDbCounter();
+
+  const importExcelExportInput = document.getElementById('importExcelExportInput');
+  document.getElementById('importExcelExportBtn').addEventListener('click', () => importExcelExportInput.click());
+  importExcelExportInput.addEventListener('change', () => {
+    if (importExcelExportInput.files.length) importFromExportedExcel(importExcelExportInput.files[0]);
+    importExcelExportInput.value = '';
+  });
 }
 
 function updateVerifiedDbCounter(){
@@ -882,6 +889,94 @@ function showManualAddForm(){
   });
 }
 
+/**
+ * Recovers work from a PREVIOUSLY-EXPORTED Excel file (exportRoutesXlsx's own fixed output
+ * format below) — a fallback for whenever a day's work was lost before it could be saved
+ * through the normal means (localStorage, the JSON state file, route history). That export
+ * has no coordinates or route geometry, so it can't restore the exact optimized route, but
+ * it DOES restore which address belongs to which courier — the part that's actually
+ * laborious to redo, especially after manual reassignments. Each address is re-added as
+ * manually assigned to its original courier, so "Repartizează automat" only needs to
+ * recompute visiting ORDER (via OSRM) once addresses are re-geocoded, not redo the
+ * courier-by-courier split from scratch.
+ *
+ * Column order MUST stay in sync with the `header` array in exportRoutesXlsx().
+ */
+const EXPORTED_EXCEL_COLUMNS = ['courierName', 'interval', 'orderNumber', 'firstName', 'lastName', 'phone', 'raw', 'details', 'paymentMethod', 'amount', 'customerNote'];
+
+function parseExportedExcelRows(rows){
+  const parsed = [];
+  for (let i = 1; i < rows.length; i++){ // row 0 is the header
+    const row = rows[i];
+    if (!row || !row.length) continue;
+    const entry = {};
+    EXPORTED_EXCEL_COLUMNS.forEach((key, idx) => { entry[key] = row[idx]; });
+    if (!String(entry.raw || '').trim()) continue; // skip blank rows
+    entry.courierName = String(entry.courierName || '').trim();
+    entry.orderNumber = String(entry.orderNumber || '').trim();
+    entry.firstName = String(entry.firstName || '').trim();
+    entry.lastName = String(entry.lastName || '').trim();
+    entry.phone = String(entry.phone || '').trim();
+    entry.raw = String(entry.raw || '').trim();
+    entry.details = String(entry.details || '').trim();
+    entry.paymentMethod = String(entry.paymentMethod || '').trim();
+    entry.amount = parseAmount(entry.amount);
+    entry.customerNote = String(entry.customerNote || '').trim();
+    parsed.push(entry);
+  }
+  return parsed;
+}
+
+function importFromExportedExcel(file){
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      const parsed = parseExportedExcelRows(rows);
+
+      if (!parsed.length){
+        showToast('Nu am găsit rânduri valide în acest fișier — verifică dacă e exportul corect de Excel.', true);
+        return;
+      }
+      const courierNames = [...new Set(parsed.map(r => r.courierName).filter(Boolean))];
+      if (!confirm(`Recuperez ${parsed.length} adrese pentru ${courierNames.length} curieri (${courierNames.join(', ')}). Adresele vor trebui re-localizate, apoi apeși "Repartizează automat" ca să recalculezi ordinea optimă — alocarea pe curieri rămâne cea din fișier. Continui?`)) return;
+
+      parsed.forEach(r => {
+        let courier = r.courierName ? state.couriers.find(c => c.name.trim().toLowerCase() === r.courierName.toLowerCase()) : null;
+        if (!courier && r.courierName){
+          addCourier();
+          courier = state.couriers[state.couriers.length - 1];
+          courier.name = r.courierName;
+        }
+        addAddress({
+          orderNumber: r.orderNumber,
+          raw: r.raw,
+          details: r.details,
+          clientName: [r.firstName, r.lastName].filter(Boolean).join(' '),
+          phone: r.phone,
+          amount: r.amount,
+          paymentMethod: r.paymentMethod,
+          customerNote: r.customerNote,
+          courierId: courier ? courier.id : null,
+          manuallyAssigned: !!courier
+        });
+      });
+
+      renderCouriers();
+      renderAddresses();
+      switchToTab('panel-adrese');
+      maybeShowGeocodeButton();
+      showToast(`${parsed.length} adrese recuperate. Completează punctele de plecare ale curierilor, apoi "Localizează adresele" și "Repartizează automat".`);
+    } catch (err){
+      console.error('Nu am putut citi fișierul Excel exportat', err);
+      showToast('Nu am putut citi fișierul — verifică dacă e exportul corect de Excel.', true);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
 function handleFile(file){
   const name = file.name.toLowerCase();
   if (name.endsWith('.csv')){
@@ -1052,7 +1147,7 @@ function normalizePaymentMethod(val){
 }
 
 function addAddress(data){
-  state.addresses.push({
+  const addr = {
     id: state.nextAddrId++,
     orderNumber: data.orderNumber || '',
     raw: data.raw,
@@ -1069,9 +1164,11 @@ function addAddress(data){
     manuallyAdjusted: false, // true once the pin has been dragged to a corrected position
     outOfArea: false,        // true if geocoding only found results outside the Bucharest/Ilfov service area
     allowOutOfArea: false,   // true if the user explicitly opted in to allow this address outside the service area
-    courierId: null,
-    manuallyAssigned: false  // true once the courier was set explicitly via the reassign dropdown
-  });
+    courierId: data.courierId ?? null,
+    manuallyAssigned: data.manuallyAssigned ?? false  // true once the courier was set explicitly (reassign dropdown, or a recovered courier-column import)
+  };
+  state.addresses.push(addr);
+  return addr;
 }
 
 function maybeShowGeocodeButton(){
