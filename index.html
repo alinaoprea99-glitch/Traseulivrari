@@ -872,6 +872,7 @@ input[type=file]{display:none;}
         <button class="btn btn-accent btn-block" id="autoAssignBtn">Repartizează automat</button>
         <div class="hint">Adresele se împart pe curieri în funcție de proximitate geografică. Poți rearanja manual mai jos.</div>
         <button class="btn btn-ghost btn-block btn-sm" id="resetRoutesBtn" style="margin-top:8px; color:var(--danger); border-color:var(--line);">Resetează trasee</button>
+        <button class="btn btn-ghost btn-block btn-sm" id="historyBtn" style="margin-top:6px;">🕘 Istoric trasee generate</button>
       </div>
       <div class="section" style="flex:1; overflow-y:auto; min-height:0;" id="routeSummary">
         <div class="empty-state">
@@ -882,6 +883,11 @@ input[type=file]{display:none;}
       </div>
     </div>
 
+    <div class="action-bar" style="border-top:none; padding-bottom:0;">
+      <button class="btn btn-ghost btn-sm" id="saveStateBtn">💾 Salvează starea</button>
+      <button class="btn btn-ghost btn-sm" id="loadStateBtn">📂 Încarcă stare</button>
+      <input type="file" id="loadStateInput" accept="application/json" style="display:none;">
+    </div>
     <div class="action-bar">
       <button class="btn btn-ghost" id="resetBtn">Resetează tot</button>
       <button class="btn btn-primary" id="exportBtn" disabled>Exportă trasee (Excel)</button>
@@ -903,6 +909,6 @@ input[type=file]{display:none;}
 
 </div>
 
-<script src="app.js?v=9"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>
