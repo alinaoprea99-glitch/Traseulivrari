@@ -35,7 +35,72 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     addCourier(); // start with one courier by default
   }
+  checkForIncomingCheckins();
 });
+
+// -------------------------------------------------------------------
+// INCOMING COURIER CHECK-INS — a courier's phone (curier.html) can send GPS positions
+// captured on arrival back here via a link (#checkins=...), symmetric to how routes are
+// sent out to couriers. Opening that link merges the positions into the same verified-
+// address database used during geocoding, so future imports of the same address reuse
+// the courier's confirmed real-world position instead of Nominatim's guess.
+// -------------------------------------------------------------------
+function checkForIncomingCheckins(){
+  const hash = location.hash.slice(1);
+  if (!hash.startsWith('checkins=')) return;
+  const encoded = hash.slice('checkins='.length);
+
+  // clear the hash immediately so refreshing the page doesn't re-trigger the import
+  history.replaceState(null, '', location.pathname + location.search);
+
+  try {
+    const data = JSON.parse(LZString.decompressFromEncodedURIComponent(encoded));
+    if (!data || !Array.isArray(data.checkins) || !data.checkins.length){
+      showToast('Linkul de check-in-uri nu conține nicio poziție.', true);
+      return;
+    }
+    showImportCheckinsModal(data);
+  } catch (e){
+    console.error('Nu am putut citi check-in-urile din link', e);
+    showToast('Linkul de check-in-uri e invalid sau corupt.', true);
+  }
+}
+
+function showImportCheckinsModal(data){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box" style="max-width:420px;">
+      <div class="modal-title">Check-in-uri de la ${escapeHtml(data.courier || 'curier')}${data.date ? ` · ${escapeHtml(data.date)}` : ''}</div>
+      <div class="hint" style="margin-bottom:10px;">${data.checkins.length} poziții confirmate de curier direct la livrare. Le adaugi în baza de adrese verificate? Vor înlocui poziția existentă pentru acele adrese, dacă exista una.</div>
+      <div style="max-height:40vh; overflow-y:auto;">
+        ${data.checkins.map(([addr, lat, lng]) => `
+          <div class="verified-db-row">
+            <div class="verified-db-text">
+              <div class="verified-db-addr">${escapeHtml(addr)}</div>
+              <div class="verified-db-coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <div style="display:flex; gap:6px; margin-top:14px;">
+        <button class="btn btn-ghost btn-sm" id="cancelImportBtn" style="flex:1;">Anulează</button>
+        <button class="btn btn-primary btn-sm" id="confirmImportBtn" style="flex:1;">Adaugă în baza verificată</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.getElementById('cancelImportBtn').addEventListener('click', close);
+  document.getElementById('confirmImportBtn').addEventListener('click', () => {
+    data.checkins.forEach(([addr, lat, lng]) => saveVerifiedAddress(addr, lat, lng));
+    updateVerifiedDbCounter();
+    close();
+    showToast(`${data.checkins.length} poziții adăugate în baza de adrese verificate.`);
+  });
+}
 
 function setDateStamp(){
   const d = new Date();
