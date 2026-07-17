@@ -52,7 +52,51 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   checkForIncomingCheckins();
+  initCrossTabSync();
 });
+
+/**
+ * Without this, having the app open in two tabs is dangerous: a stale tab (left open from
+ * earlier, still holding an older/emptier in-memory state) re-saves that stale state to
+ * localStorage on its NEXT render — triggered by something as small as a field blur —
+ * silently overwriting whatever a different, more current tab had just saved. This is
+ * exactly the "I refreshed and everything was gone" failure mode: the data WAS saved
+ * correctly, then wiped out moments later by an unrelated idle tab.
+ *
+ * The fix: listen for the browser's `storage` event, which fires in every OTHER same-origin
+ * tab whenever one tab changes localStorage (never in the tab that made the change itself).
+ * The instant one tab saves, every other open tab immediately adopts that exact state —
+ * so an idle tab is never more than one write behind, and can't clobber newer data with
+ * stale data anymore. This does NOT solve two tabs being actively edited at the same time
+ * (last write still wins there), only the far more common case of a forgotten idle tab.
+ */
+function initCrossTabSync(){
+  window.addEventListener('storage', (e) => {
+    if (![COURIERS_STORAGE_KEY, ADDRESSES_STORAGE_KEY, ROUTES_STORAGE_KEY].includes(e.key)) return;
+    try {
+      if (e.key === COURIERS_STORAGE_KEY){
+        const data = e.newValue ? JSON.parse(e.newValue) : null;
+        state.couriers = (data && Array.isArray(data.couriers)) ? data.couriers : [];
+        state.nextCourierId = (data && data.nextCourierId) || 1;
+      } else if (e.key === ADDRESSES_STORAGE_KEY){
+        const data = e.newValue ? JSON.parse(e.newValue) : null;
+        state.addresses = (data && Array.isArray(data.addresses)) ? data.addresses : [];
+        state.nextAddrId = (data && data.nextAddrId) || 1;
+      } else if (e.key === ROUTES_STORAGE_KEY){
+        const data = e.newValue ? JSON.parse(e.newValue) : null;
+        state.routes = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+      }
+      renderCouriers();
+      renderAddresses();
+      renderRouteSummary();
+      maybeShowGeocodeButton();
+      document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+      redrawMap();
+    } catch (err){
+      console.error('Nu am putut sincroniza starea cu celălalt tab', err);
+    }
+  });
+}
 
 // -------------------------------------------------------------------
 // INCOMING COURIER CHECK-INS — a courier's phone (curier.html) can send GPS positions
