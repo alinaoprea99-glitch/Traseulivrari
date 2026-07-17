@@ -854,6 +854,10 @@ input[type=file]{display:none;}
             <span class="addr-toolbar-sep">·</span>
             <button class="addr-toolbar-link" id="resetAddressesBtn" style="color:var(--danger);">resetează adrese</button>
           </div>
+          <div class="addr-toolbar-row">
+            <button class="addr-toolbar-link" id="importExcelExportBtn">↩ recuperează dintr-un Excel exportat anterior</button>
+            <input type="file" id="importExcelExportInput" accept=".xlsx,.xls" style="display:none;">
+          </div>
         </div>
       </div>
       <div class="addr-list" id="addrList" style="flex:1; min-height:0; overflow-y:auto;">
@@ -909,6 +913,6 @@ input[type=file]{display:none;}
 
 </div>
 
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>
