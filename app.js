@@ -35,6 +35,22 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     addCourier(); // start with one courier by default
   }
+
+  // Restore addresses/routes from the previous session — a page reload (e.g. to pick up
+  // an app update) should never lose a day's work in progress. Only the explicit
+  // "Resetează ..." actions clear these.
+  const hadSavedAddresses = loadAddressesFromStorage();
+  loadRoutesFromStorage();
+  if (hadSavedAddresses){
+    renderAddresses();
+    renderCouriers();
+    renderRouteSummary();
+    maybeShowGeocodeButton();
+    document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+    redrawMap();
+    fitMapToAll();
+  }
+
   checkForIncomingCheckins();
 });
 
@@ -165,11 +181,15 @@ function initCourierPanel(){
   });
 }
 
-// ---- Persistent courier list (localStorage) ------------------------
-// Couriers (name, start/end points, departure time, etc.) are saved across sessions, since
-// the same couriers tend to be reused day after day. Addresses and routes are NOT persisted
-// here — those are expected to be re-imported fresh for each day's deliveries.
+// ---- Persistent work-in-progress (localStorage) ---------------------
+// Couriers, addresses AND routes are all saved across sessions/reloads now, so a browser
+// refresh (e.g. to pick up an app update) never loses a day's work in progress. Everything
+// only gets cleared by the explicit "Resetează ..." actions in the action bar — never by a
+// reload. save*ToStorage() piggybacks on the render*() functions that already run after
+// every mutation, so every call site that changes addresses/routes stays covered for free.
 const COURIERS_STORAGE_KEY = 'trasee-curieri:couriers';
+const ADDRESSES_STORAGE_KEY = 'trasee-curieri:addresses';
+const ROUTES_STORAGE_KEY = 'trasee-curieri:routes';
 
 function saveCouriersToStorage(){
   try {
@@ -193,6 +213,54 @@ function loadCouriersFromStorage(){
     return true;
   } catch (e){
     console.error('Could not load couriers', e);
+    return false;
+  }
+}
+
+function saveAddressesToStorage(){
+  try {
+    localStorage.setItem(ADDRESSES_STORAGE_KEY, JSON.stringify({
+      addresses: state.addresses,
+      nextAddrId: state.nextAddrId
+    }));
+  } catch (e){
+    console.error('Could not save addresses', e);
+  }
+}
+
+function loadAddressesFromStorage(){
+  try {
+    const raw = localStorage.getItem(ADDRESSES_STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.addresses) || !data.addresses.length) return false;
+    state.addresses = data.addresses;
+    state.nextAddrId = data.nextAddrId || (Math.max(...data.addresses.map(a => a.id)) + 1);
+    return true;
+  } catch (e){
+    console.error('Could not load addresses', e);
+    return false;
+  }
+}
+
+function saveRoutesToStorage(){
+  try {
+    localStorage.setItem(ROUTES_STORAGE_KEY, JSON.stringify(state.routes));
+  } catch (e){
+    console.error('Could not save routes', e);
+  }
+}
+
+function loadRoutesFromStorage(){
+  try {
+    const raw = localStorage.getItem(ROUTES_STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !Object.keys(data).length) return false;
+    state.routes = data;
+    return true;
+  } catch (e){
+    console.error('Could not load routes', e);
     return false;
   }
 }
@@ -993,6 +1061,7 @@ function renderAddresses(){
         <div class="es-title">Nicio adresă încărcată</div>
         <div class="es-sub">Importă un fișier CSV/Excel sau adaugă manual</div>
       </div>`;
+    saveAddressesToStorage();
     return;
   }
 
@@ -1150,6 +1219,8 @@ function renderAddresses(){
       showToast('Adresă ștearsă.');
     });
   });
+
+  saveAddressesToStorage();
 }
 
 // -------------------------------------------------------------------
@@ -2376,6 +2447,7 @@ function renderRouteSummary(){
         <div class="es-sub">Adaugă curieri și adrese, apoi repartizează</div>
       </div>`;
     state.routeSelection = new Set();
+    saveRoutesToStorage();
     return;
   }
 
@@ -2475,6 +2547,8 @@ function renderRouteSummary(){
   container.querySelectorAll('[data-send-courier]').forEach(btn => {
     btn.addEventListener('click', () => showSendToCourierModal(parseInt(btn.dataset.sendCourier)));
   });
+
+  saveRoutesToStorage();
 }
 
 function renderBulkMoveBar(container){
@@ -3049,7 +3123,11 @@ function initActionBar(){
     state.nextCourierId = 1;
     state.nextAddrId = 1;
     state.routeSelection.clear();
-    try { localStorage.removeItem(COURIERS_STORAGE_KEY); } catch (e){ console.error(e); }
+    try {
+      localStorage.removeItem(COURIERS_STORAGE_KEY);
+      localStorage.removeItem(ADDRESSES_STORAGE_KEY);
+      localStorage.removeItem(ROUTES_STORAGE_KEY);
+    } catch (e){ console.error(e); }
     addCourier();
     renderAddresses();
     renderRouteSummary();
@@ -3082,6 +3160,10 @@ function initActionBar(){
     state.nextAddrId = 1;
     state.routes = {};
     state.routeSelection.clear();
+    try {
+      localStorage.removeItem(ADDRESSES_STORAGE_KEY);
+      localStorage.removeItem(ROUTES_STORAGE_KEY);
+    } catch (e){ console.error(e); }
     renderAddresses();
     renderCouriers();
     renderRouteSummary();
@@ -3100,6 +3182,7 @@ function initActionBar(){
     state.routes = {};
     state.routeSelection.clear();
     state.addresses.forEach(a => { a.courierId = null; a.manuallyAssigned = false; });
+    try { localStorage.removeItem(ROUTES_STORAGE_KEY); } catch (e){ console.error(e); }
     renderAddresses();
     renderCouriers();
     renderRouteSummary();
