@@ -137,6 +137,152 @@ function wazeUrl(lat, lng){
 let payload = null;
 let statuses = {};
 let checkins = {};
+let currentView = 'list';
+
+// ---- Map view: numbered stop markers, the courier's own live position, and a
+// tap-to-see "how long from here" ETA — all computed live via OSRM, no route geometry
+// is ever embedded in the link itself (keeps it short; see app.js buildCourierPayload).
+let courierMap = null;
+let markersLayer = null;
+let routeLineLayer = null;
+let meMarker = null;
+let watchId = null;
+let lastKnownPos = null;
+let routeLineFetchedFor = null; // routeId this run's line was fetched for, to avoid refetching on every toggle
+
+const STATUS_COLORS = { pending: '#5B6B6D', delivered: '#2D6A4F', failed: '#C23B22' };
+
+function initCourierMapIfNeeded(){
+  if (courierMap) return;
+  courierMap = L.map('courierMap', { zoomControl: true });
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap, © CARTO'
+  }).addTo(courierMap);
+  markersLayer = L.layerGroup().addTo(courierMap);
+  routeLineLayer = L.layerGroup().addTo(courierMap);
+  updateMapMarkers();
+  fetchAndDrawRouteLine();
+}
+
+function numberedIcon(number, color){
+  return L.divIcon({
+    className: '',
+    html: `<div class="map-num-icon" style="background:${color}">${number}</div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13]
+  });
+}
+
+function updateMapMarkers(){
+  if (!markersLayer || !payload) return;
+  markersLayer.clearLayers();
+  const bounds = [];
+  payload.stops.forEach(s => {
+    if (s.lat == null || s.lng == null) return;
+    const status = statuses[s.id] || 'pending';
+    const marker = L.marker([s.lat, s.lng], { icon: numberedIcon(s.o, STATUS_COLORS[status]) }).addTo(markersLayer);
+    marker.bindPopup(`
+      <div class="stop-popup" style="font-family:'Inter',sans-serif;">
+        <div style="font-weight:600; margin-bottom:2px;">${escapeHtml(s.name || s.addr)}</div>
+        <div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">${escapeHtml(s.addr)}</div>
+        <button class="pill-btn" data-eta-for="${s.id}" style="cursor:pointer;">⏱ Cât mai am până aici?</button>
+      </div>
+    `);
+    marker.on('popupopen', (e) => {
+      const btn = e.popup.getElement().querySelector('[data-eta-for]');
+      if (btn) btn.addEventListener('click', () => showEtaForStop(s));
+    });
+    bounds.push([s.lat, s.lng]);
+  });
+  if (bounds.length) courierMap.fitBounds(bounds, { padding: [30, 30] });
+}
+
+async function fetchAndDrawRouteLine(){
+  if (!payload || routeLineFetchedFor === payload.routeId) return;
+  const pts = payload.stops.filter(s => s.lat != null).map(s => `${s.lng},${s.lat}`);
+  if (pts.length < 2) return;
+  routeLineFetchedFor = payload.routeId;
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${pts.join(';')}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.code === 'Ok' && data.routes && data.routes.length){
+      const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+      routeLineLayer.clearLayers();
+      L.polyline(coords, { color: '#FF5A1F', weight: 4, opacity: 0.75 }).addTo(routeLineLayer);
+    }
+  } catch (e){
+    console.error('Nu am putut desena linia traseului pe hartă', e);
+  }
+}
+
+function startLocationWatch(){
+  if (watchId != null || !navigator.geolocation) return;
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      lastKnownPos = pos.coords;
+      if (!courierMap) return;
+      const latlng = [pos.coords.latitude, pos.coords.longitude];
+      if (!meMarker){
+        meMarker = L.marker(latlng, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8] }) }).addTo(courierMap);
+      } else {
+        meMarker.setLatLng(latlng);
+      }
+    },
+    (err) => console.error('Nu am putut urmări poziția live', err),
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+  );
+}
+
+function stopLocationWatch(){
+  if (watchId != null){
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+}
+
+async function showEtaForStop(stop){
+  const banner = document.getElementById('etaBanner');
+  const hint = document.getElementById('locateHint');
+  if (!lastKnownPos){
+    banner.style.display = 'none';
+    hint.style.display = 'block';
+    hint.textContent = 'Îți aștept poziția GPS — permite accesul la locație și încearcă din nou în câteva secunde.';
+    return;
+  }
+  hint.style.display = 'none';
+  banner.style.display = 'block';
+  banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Se calculează…</div>`;
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${lastKnownPos.longitude},${lastKnownPos.latitude};${stop.lng},${stop.lat}?overview=false`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.code === 'Ok' && data.routes && data.routes.length){
+      const min = Math.round(data.routes[0].duration / 60);
+      const km = (data.routes[0].distance / 1000).toFixed(1);
+      banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">⏱ ~${min} min · ${km} km de la poziția ta curentă</div>`;
+    } else {
+      banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Nu am putut calcula timpul — încearcă din nou.</div>`;
+    }
+  } catch (e){
+    console.error('Nu am putut calcula ETA', e);
+    banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Nu am putut calcula timpul — verifică conexiunea.</div>`;
+  }
+}
+
+function switchView(view){
+  currentView = view;
+  document.body.classList.toggle('view-map', view === 'map');
+  if (view === 'map'){
+    initCourierMapIfNeeded();
+    startLocationWatch();
+    setTimeout(() => courierMap && courierMap.invalidateSize(), 50);
+  } else {
+    stopLocationWatch();
+  }
+  render();
+}
 
 function render(){
   const root = document.getElementById('root');
@@ -165,11 +311,19 @@ function render(){
       <div class="head-sub">${escapeHtml(payload.date || '')} · ${total} ${total === 1 ? 'oprire' : 'opriri'}</div>
       <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
       <div class="progress-label">${delivered} livrate${failed ? ` · ${failed} nelivrate` : ''} · ${remaining} rămase</div>
+      <div class="view-toggle">
+        <button class="view-toggle-btn ${currentView === 'list' ? 'active' : ''}" data-view="list">📋 Listă</button>
+        <button class="view-toggle-btn ${currentView === 'map' ? 'active' : ''}" data-view="map">🗺 Hartă</button>
+      </div>
       ${checkinCount ? `<button class="pill-btn" id="sendCheckinsBtn" style="margin-top:9px; width:100%; text-align:center; background:var(--depot-soft); border-color:var(--depot); color:var(--depot); font-weight:700;">📍 Trimite ${checkinCount} check-in${checkinCount === 1 ? '' : '-uri'} către dispecer</button>` : ''}
     </div>
     <div class="stop-list" id="stopList"></div>
     <div class="foot-note">Bifele și check-in-urile rămân salvate doar pe acest telefon, până le trimiți tu înapoi.</div>
   `;
+
+  root.querySelectorAll('[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
 
   const sendBtn = document.getElementById('sendCheckinsBtn');
   if (sendBtn) sendBtn.addEventListener('click', sendCheckinsBack);
@@ -224,6 +378,8 @@ function render(){
   list.querySelectorAll('[data-checkin]').forEach(btn => {
     btn.addEventListener('click', () => doCheckin(btn.dataset.checkin, btn));
   });
+
+  updateMapMarkers(); // no-op if the map hasn't been opened yet — keeps marker colors in sync with status once it has
 }
 
 async function doCheckin(stopId, btn){
