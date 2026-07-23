@@ -13,6 +13,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
 
 <style>
@@ -174,6 +176,75 @@ body{
   padding:10px 16px 4px;
 }
 
+.view-toggle{
+  display:flex;
+  gap:6px;
+  margin-top:11px;
+}
+.view-toggle-btn{
+  flex:1;
+  font-family:'Inter',sans-serif;
+  font-weight:600;
+  font-size:12.5px;
+  padding:8px 6px;
+  border-radius:20px;
+  border:1px solid var(--line);
+  background:var(--white);
+  color:var(--ink-soft);
+}
+.view-toggle-btn.active{background:var(--ink); border-color:var(--ink); color:var(--paper);}
+
+#mapWrap{display:none; position:relative; width:100%; height:70vh;}
+body.view-map #mapWrap{display:block;}
+body.view-map .stop-list{display:none;}
+body.view-map .foot-note{display:none;}
+#courierMap{width:100%; height:100%;}
+
+.me-dot{
+  width:16px; height:16px;
+  border-radius:50%;
+  background:#1D7FBF;
+  border:3px solid #fff;
+  box-shadow:0 0 0 2px #1D7FBF, 0 1px 4px rgba(0,0,0,0.35);
+}
+.map-num-icon{
+  width:26px; height:26px;
+  border-radius:50%;
+  color:#fff;
+  font-family:'JetBrains Mono',monospace;
+  font-weight:700;
+  font-size:12px;
+  display:flex; align-items:center; justify-content:center;
+  border:2px solid #fff;
+  box-shadow:0 1px 4px rgba(0,0,0,0.3);
+}
+
+.eta-banner{
+  position:absolute;
+  top:10px; left:10px; right:10px;
+  z-index:500;
+  background:rgba(255,255,255,0.97);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:9px 12px;
+  font-size:12.5px;
+  box-shadow:0 2px 8px rgba(0,0,0,0.12);
+}
+.eta-banner .eta-title{font-weight:600; font-size:13px;}
+.eta-banner .eta-detail{font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--ink-soft); margin-top:2px;}
+.locate-hint{
+  position:absolute;
+  bottom:10px; left:10px; right:10px;
+  z-index:500;
+  background:rgba(255,255,255,0.97);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:8px 12px;
+  font-size:11.5px;
+  color:var(--ink-soft);
+  text-align:center;
+}
+
 .empty-state{
   text-align:center;
   padding:60px 24px;
@@ -185,6 +256,11 @@ body{
 </head>
 <body>
 <div id="root"></div>
-<script src="curier.js?v=5"></script>
+<div id="mapWrap">
+  <div id="courierMap"></div>
+  <div class="eta-banner" id="etaBanner" style="display:none;"></div>
+  <div class="locate-hint" id="locateHint" style="display:none;">Ating o oprire pe hartă ca să vezi timpul estimat până acolo.</div>
+</div>
+<script src="curier.js?v=6"></script>
 </body>
 </html>
