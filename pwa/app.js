@@ -25,6 +25,7 @@ const ICONS = {
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="11" width="15" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l.9-4L16.5 4.4a1.5 1.5 0 0 1 2.1 0l1 1a1.5 1.5 0 0 1 0 2.1L8 19 4 20z"/><path d="M14.5 6.5l3 3"/></svg>',
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L11 13"/><path d="M21 3l-7 18-4-8-8-4 19-6z"/></svg>',
+  tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 3H5a2 2 0 0 0-2 2v6.5a2 2 0 0 0 .6 1.4l8 8a2 2 0 0 0 2.8 0l6.5-6.5a2 2 0 0 0 0-2.8l-8-8a2 2 0 0 0-1.4-.6z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/></svg>',
   emptyPin: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.4 7-12.5A7 7 0 0 0 5 9.5C5 14.6 12 22 12 22z"/><circle cx="12" cy="9.5" r="2.5"/></svg>',
   emptyRoute: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-3-3 8-4 4 4-4 8-3-3-6 6"/><path d="M4 17l-1 4 4-1"/></svg>'
 };
@@ -128,37 +129,61 @@ function checkForIncomingCheckins(){
 
   try {
     const data = JSON.parse(LZString.decompressFromEncodedURIComponent(encoded));
-    if (!data || !Array.isArray(data.checkins) || !data.checkins.length){
-      showToast('Linkul de check-in-uri nu conține nicio poziție.', true);
+    const hasCheckins = data && Array.isArray(data.checkins) && data.checkins.length;
+    const hasNotes = data && Array.isArray(data.notes) && data.notes.length;
+    if (!hasCheckins && !hasNotes){
+      showToast('Linkul primit de la curier nu conține nimic nou.', true);
       return;
     }
     showImportCheckinsModal(data);
   } catch (e){
-    console.error('Nu am putut citi check-in-urile din link', e);
-    showToast('Linkul de check-in-uri e invalid sau corupt.', true);
+    console.error('Nu am putut citi datele din link', e);
+    showToast('Linkul primit de la curier e invalid sau corupt.', true);
   }
 }
 
 function showImportCheckinsModal(data){
+  const checkins = Array.isArray(data.checkins) ? data.checkins : [];
+  const notes = Array.isArray(data.notes) ? data.notes : [];
+
+  const checkinsSection = checkins.length ? `
+    <div class="hint" style="margin-bottom:6px;">${checkins.length} poziții confirmate de curier direct la livrare — vor înlocui poziția existentă în baza de adrese verificate, dacă exista una.</div>
+    <div style="max-height:30vh; overflow-y:auto; margin-bottom:10px;">
+      ${checkins.map(([addr, lat, lng]) => `
+        <div class="verified-db-row">
+          <div class="verified-db-text">
+            <div class="verified-db-addr">${escapeHtml(addr)}</div>
+            <div class="verified-db-coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>` : '';
+
+  const notesSection = notes.length ? `
+    <div class="hint" style="margin-bottom:6px;">${notes.length} ${notes.length === 1 ? 'observație actualizată' : 'observații actualizate'} de curier — vor înlocui observația existentă pentru acele comenzi.</div>
+    <div style="max-height:30vh; overflow-y:auto; margin-bottom:10px;">
+      ${notes.map(([id, text]) => {
+        const addr = state.addresses.find(a => a.id === id);
+        return `
+          <div class="verified-db-row">
+            <div class="verified-db-text">
+              <div class="verified-db-addr">${escapeHtml(addr ? (addr.clientName || addr.raw) : `comandă #${id}`)}</div>
+              <div class="verified-db-coords">${ICONS.tag}${escapeHtml(text)}</div>
+            </div>
+          </div>`;
+      }).join('')}
+    </div>` : '';
+
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal-box" style="max-width:420px;">
-      <div class="modal-title">Check-in-uri de la ${escapeHtml(data.courier || 'curier')}${data.date ? ` · ${escapeHtml(data.date)}` : ''}</div>
-      <div class="hint" style="margin-bottom:10px;">${data.checkins.length} poziții confirmate de curier direct la livrare. Le adaugi în baza de adrese verificate? Vor înlocui poziția existentă pentru acele adrese, dacă exista una.</div>
-      <div style="max-height:40vh; overflow-y:auto;">
-        ${data.checkins.map(([addr, lat, lng]) => `
-          <div class="verified-db-row">
-            <div class="verified-db-text">
-              <div class="verified-db-addr">${escapeHtml(addr)}</div>
-              <div class="verified-db-coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
-            </div>
-          </div>
-        `).join('')}
-      </div>
+      <div class="modal-title">De la ${escapeHtml(data.courier || 'curier')}${data.date ? ` · ${escapeHtml(data.date)}` : ''}</div>
+      ${checkinsSection}
+      ${notesSection}
       <div style="display:flex; gap:6px; margin-top:14px;">
         <button class="btn btn-ghost btn-sm" id="cancelImportBtn" style="flex:1;">Anulează</button>
-        <button class="btn btn-primary btn-sm" id="confirmImportBtn" style="flex:1;">Adaugă în baza verificată</button>
+        <button class="btn btn-primary btn-sm" id="confirmImportBtn" style="flex:1;">Aplică</button>
       </div>
     </div>
   `;
@@ -168,10 +193,27 @@ function showImportCheckinsModal(data){
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   document.getElementById('cancelImportBtn').addEventListener('click', close);
   document.getElementById('confirmImportBtn').addEventListener('click', () => {
-    data.checkins.forEach(([addr, lat, lng]) => saveVerifiedAddress(addr, lat, lng));
-    updateVerifiedDbCounter();
+    checkins.forEach(([addr, lat, lng]) => saveVerifiedAddress(addr, lat, lng));
+    if (checkins.length) updateVerifiedDbCounter();
+
+    let notesApplied = 0;
+    notes.forEach(([id, text]) => {
+      const addr = state.addresses.find(a => a.id === id);
+      if (!addr) return;
+      addr.observatii = text;
+      notesApplied++;
+    });
+    if (notesApplied){
+      renderAddresses();
+      renderRouteSummary();
+      redrawMap();
+    }
+
     close();
-    showToast(`${data.checkins.length} poziții adăugate în baza de adrese verificate.`);
+    const parts = [];
+    if (checkins.length) parts.push(`${checkins.length} poziții adăugate în baza de adrese verificate`);
+    if (notesApplied) parts.push(`${notesApplied} ${notesApplied === 1 ? 'observație actualizată' : 'observații actualizate'}`);
+    showToast(parts.join(' · ') || 'Nimic de aplicat.');
   });
 }
 
@@ -748,9 +790,13 @@ function showEditAddressForm(addrId){
           </select>
         </div>
       </div>
-      <div class="field" style="margin-bottom:0;">
+      <div class="field" style="margin-bottom:7px;">
         <label>Notă client</label>
         <input type="text" id="eaNote" value="${escapeHtml(addr.customerNote)}">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Observații</label>
+        <textarea id="eaObs" rows="2" placeholder="notițe interne — vizibile și editabile și de curier">${escapeHtml(addr.observatii)}</textarea>
       </div>
       <div style="display:flex; gap:6px; margin-top:14px;">
         <button class="btn btn-ghost btn-sm" id="eaCancelBtn" style="flex:1;">Anulează</button>
@@ -785,6 +831,7 @@ function showEditAddressForm(addrId){
     addr.amount = parseAmount(document.getElementById('eaAmount').value);
     addr.paymentMethod = document.getElementById('eaPayment').value;
     addr.customerNote = document.getElementById('eaNote').value.trim();
+    addr.observatii = document.getElementById('eaObs').value.trim();
     addr.raw = newAddress;
     addr.allowOutOfArea = newAllowOutOfArea;
 
@@ -940,7 +987,7 @@ function showManualAddForm(){
  *
  * Column order MUST stay in sync with the `header` array in exportRoutesXlsx().
  */
-const EXPORTED_EXCEL_COLUMNS = ['courierName', 'interval', 'orderNumber', 'firstName', 'lastName', 'phone', 'raw', 'details', 'products', 'productsKg', 'paymentMethod', 'amount', 'customerNote'];
+const EXPORTED_EXCEL_COLUMNS = ['courierName', 'interval', 'orderNumber', 'firstName', 'lastName', 'phone', 'raw', 'details', 'products', 'productsKg', 'paymentMethod', 'amount', 'customerNote', 'observatii'];
 
 function parseExportedExcelRows(rows){
   const parsed = [];
@@ -962,6 +1009,7 @@ function parseExportedExcelRows(rows){
     entry.paymentMethod = String(entry.paymentMethod || '').trim();
     entry.amount = parseAmount(entry.amount);
     entry.customerNote = String(entry.customerNote || '').trim();
+    entry.observatii = String(entry.observatii || '').trim();
     parsed.push(entry);
   }
   return parsed;
@@ -1001,6 +1049,7 @@ function importFromExportedExcel(file){
           amount: r.amount,
           paymentMethod: r.paymentMethod,
           customerNote: r.customerNote,
+          observatii: r.observatii,
           courierId: courier ? courier.id : null,
           manuallyAssigned: !!courier
         });
@@ -1222,6 +1271,7 @@ function addAddress(data){
     products: data.products || '', // e.g. "6x Piersici Turtite, 1x Mere de Vara" — what's actually being delivered
     productsKg: data.productsKg ?? null, // total weight — every product is sold by the kg, so this is just the summed quantities
     customerNote: data.customerNote || '',
+    observatii: data.observatii || '', // working notes editable both by dispatcher and by the courier on their phone; synced back via the check-in return link
     lat: null,
     lng: null,
     status: 'pending',
@@ -1316,6 +1366,7 @@ function renderAddresses(){
     const productsLine = a.products ? `<div class="addr-sub-addr">${ICONS.apple}${formatProductsWithKg(a)}</div>` : '';
     const phoneLine = a.phone ? `<div class="addr-sub-addr">${escapeHtml(a.phone)}</div>` : '';
     const noteLine = a.customerNote ? `<div class="addr-sub-addr">${ICONS.note}${escapeHtml(a.customerNote)}</div>` : '';
+    const obsLine = a.observatii ? `<div class="addr-obs-line">${ICONS.tag}${escapeHtml(a.observatii)}</div>` : '';
     const paymentChip = (a.amount != null || a.paymentMethod)
       ? `<div class="addr-payment-chip ${a.paymentMethod === 'Ramburs' ? 'cod' : ''}">${a.amount != null ? a.amount.toFixed(2) + ' lei' : ''}${a.amount != null && a.paymentMethod ? ' · ' : ''}${escapeHtml(a.paymentMethod || '')}</div>`
       : '';
@@ -1340,6 +1391,7 @@ function renderAddresses(){
         ${productsLine}
         ${phoneLine}
         ${noteLine}
+        ${obsLine}
         ${paymentChip}
         ${cancelledBadge}
         ${statusHtml}
@@ -2932,6 +2984,7 @@ function renderRouteSummary(){
       const windowChip = win
         ? `<div class="addr-window-chip${win.afterLimit ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
         : '';
+      const obsLine = addr.observatii ? `<div class="addr-obs-line">${ICONS.tag}${escapeHtml(addr.observatii)}</div>` : '';
       const isFirst = idx === 0;
       const isLast = idx === route.order.length - 1;
       const isChecked = state.routeSelection.has(addr.id);
@@ -2947,6 +3000,7 @@ function renderRouteSummary(){
           ${detailsLine}
           ${productsLine}
           ${phoneLine}
+          ${obsLine}
           ${paymentChip}
           <div class="rs-row-actions">
             <select class="rs-courier-select" data-id="${addr.id}">
@@ -3087,7 +3141,7 @@ function buildCourierPayload(courier, route){
       a.id, idx + 1, a.clientName || '', a.phone || '', a.raw, a.details || '', a.products || '', a.productsKg, a.customerNote || '',
       a.amount, a.paymentMethod || '',
       Math.round(a.lat * 1e6) / 1e6, Math.round(a.lng * 1e6) / 1e6,
-      win ? win.windowStart : ''
+      win ? win.windowStart : '', a.observatii || ''
     ];
   }).filter(Boolean);
 
@@ -3357,6 +3411,7 @@ function buildStopPopup(stopNumber, courierName, addr, win){
   const detailsLine = addr.details ? `<div class="sp-meta">${ICONS.building}${escapeHtml(addr.details)}</div>` : '';
   const productsLine = addr.products ? `<div class="sp-meta">${ICONS.apple}${formatProductsWithKg(addr)}</div>` : '';
   const phoneLine = addr.phone ? `<div class="sp-meta">${ICONS.phone}${escapeHtml(addr.phone)}</div>` : '';
+  const obsLine = addr.observatii ? `<div class="addr-obs-line">${ICONS.tag}${escapeHtml(addr.observatii)}</div>` : '';
   const paymentLine = (addr.amount != null || addr.paymentMethod)
     ? `<div class="sp-payment">${addr.amount != null ? addr.amount.toFixed(2) + ' lei' : ''}${addr.amount != null && addr.paymentMethod ? ' · ' : ''}${escapeHtml(addr.paymentMethod || '')}</div>`
     : '';
@@ -3369,6 +3424,7 @@ function buildStopPopup(stopNumber, courierName, addr, win){
     ${detailsLine}
     ${productsLine}
     ${phoneLine}
+    ${obsLine}
     ${paymentLine}
   </div>`;
 }
@@ -3706,7 +3762,7 @@ function splitClientName(fullName){
 }
 
 function exportRoutesXlsx(){
-  const header = ['Curier', 'Interval Livrare', 'Nr. Comanda', 'First Name (Shipping)', 'Last Name (Shipping)', 'Phone (Billing)', 'Adresa', 'Detalii', 'Produse', 'Total Kg', 'Payment Method Title', 'Order Total Amount', 'Customer Note'];
+  const header = ['Curier', 'Interval Livrare', 'Nr. Comanda', 'First Name (Shipping)', 'Last Name (Shipping)', 'Phone (Billing)', 'Adresa', 'Detalii', 'Produse', 'Total Kg', 'Payment Method Title', 'Order Total Amount', 'Customer Note', 'Observatii'];
   const rows = [header];
   let fallbackOrderNo = 1;
 
@@ -3727,7 +3783,7 @@ function exportRoutesXlsx(){
         firstName, lastName, addr.phone || '',
         addr.raw, addr.details || '', addr.products || '', addr.productsKg != null ? addr.productsKg : '',
         addr.paymentMethod || '', addr.amount != null ? addr.amount : '',
-        addr.customerNote || ''
+        addr.customerNote || '', addr.observatii || ''
       ]);
     });
   });
@@ -3735,7 +3791,7 @@ function exportRoutesXlsx(){
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [
     {wch:12},{wch:14},{wch:11},{wch:18},{wch:16},{wch:14},
-    {wch:38},{wch:30},{wch:30},{wch:10},{wch:16},{wch:14},{wch:30}
+    {wch:38},{wch:30},{wch:30},{wch:10},{wch:16},{wch:14},{wch:30},{wch:30}
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Trasee');
