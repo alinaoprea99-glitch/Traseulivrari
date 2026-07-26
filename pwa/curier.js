@@ -143,6 +143,27 @@ function wazeUrl(lat, lng){
   return `https://waze.com/ul?ll=${lat},${lng}&navigate=yes`;
 }
 
+// Simple, consistent line-icon set (no emoji) for everything that isn't a real third-party
+// service mark. Maps/Waze/Check-in use the actual brand assets in icons/ instead — see iconImg().
+const ICONS = {
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5c0-1 1-2 2-2h2l2 5-2 1a11 11 0 0 0 6 6l1-2 5 2v2c0 1-1 2-2 2A15 15 0 0 1 4 5z"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+  cash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/></svg>',
+  apple: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8c-2 0-4 1.6-4 5 0 3 2 7 4 7s2-1 4-1 2 1 4 1c1.6 0 3.4-3 3.7-5"/><path d="M12 8c0-1.8 1-3.4 3-4"/></svg>',
+  note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.6 8.4A9 9 0 0 1 8 19l-4 1 1.3-3.7A8.3 8.3 0 0 1 4 11.5 8.4 8.4 0 0 1 12.5 3 8.4 8.4 0 0 1 21 11.5z"/></svg>',
+  building: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V6a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v15"/><path d="M13 21v-9a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v9"/><path d="M9 9h0M9 13h0M9 17h0"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6"/></svg>',
+  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>',
+  map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4L3 6.5v13L9 17l6 3 6-2.5v-13L15 7 9 4z"/><path d="M9 4v13M15 7v13"/></svg>',
+  send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L11 13"/><path d="M21 3l-7 18-4-8-8-4 19-6z"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5L22 20H2L12 3.5z"/><path d="M12 10v4.5M12 17.5h0"/></svg>'
+};
+
+function iconImg(src, alt){
+  return `<img src="${src}" alt="${alt}">`;
+}
+
 let payload = null;
 let statuses = {};
 let checkins = {};
@@ -192,11 +213,11 @@ function updateMapMarkers(){
     const status = statuses[s.id] || 'pending';
     const marker = L.marker([s.lat, s.lng], { icon: numberedIcon(s.o, STATUS_COLORS[status]) }).addTo(markersLayer);
     marker.bindPopup(`
-      <div class="stop-popup" style="font-family:'Inter',sans-serif;">
-        <div style="font-weight:600; margin-bottom:2px;">${escapeHtml(s.name || s.addr)}</div>
+      <div class="stop-popup">
+        <div style="font-weight:700; margin-bottom:2px;">${escapeHtml(s.name || s.addr)}</div>
         <div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">${escapeHtml(s.addr)}</div>
-        ${s.products ? `<div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">🛒 ${formatProductsWithKg(s)}</div>` : ''}
-        <button class="pill-btn" data-eta-for="${s.id}" style="cursor:pointer;">⏱ Cât mai am până aici?</button>
+        ${s.products ? `<div style="font-size:12px; color:#5B6B6D; margin-bottom:6px; display:flex; gap:4px; align-items:flex-start;"><span style="width:12px; flex-shrink:0;">${ICONS.apple}</span>${formatProductsWithKg(s)}</div>` : ''}
+        <button class="popup-eta-btn" data-eta-for="${s.id}">${ICONS.clock} Cât mai am până aici?</button>
       </div>
     `);
     marker.on('popupopen', (e) => {
@@ -390,7 +411,7 @@ function render(){
   if (!payload || !Array.isArray(payload.stops)){
     root.innerHTML = `
       <div class="empty-state">
-        <div class="es-icon">⚠</div>
+        <div class="es-icon">${ICONS.warn}</div>
         <div class="es-title">Link invalid sau incomplet</div>
         <div class="es-sub">Acest link nu conține un traseu valid. Cere dispecerului un link nou.</div>
       </div>`;
@@ -398,27 +419,36 @@ function render(){
   }
 
   const total = payload.stops.length;
-  const delivered = payload.stops.filter(s => statuses[s.id] === 'delivered').length;
-  const failed = payload.stops.filter(s => statuses[s.id] === 'failed').length;
-  const remaining = total - delivered - failed;
-  const pct = total ? Math.round((delivered + failed) / total * 100) : 0;
-
+  const pending = payload.stops.filter(s => !statuses[s.id]).sort((a, b) => a.o - b.o);
+  const resolved = payload.stops.filter(s => statuses[s.id]).sort((a, b) => a.o - b.o);
+  const delivered = resolved.filter(s => statuses[s.id] === 'delivered').length;
+  const failed = resolved.length - delivered;
+  const pct = total ? Math.round(resolved.length / total * 100) : 0;
   const checkinCount = Object.keys(checkins).length;
+
+  const next = pending[0];
+  const rest = pending.slice(1);
 
   root.innerHTML = `
     <div class="head">
-      <div class="head-title">${escapeHtml(payload.courier || 'Curier')}</div>
-      <div class="head-sub">${escapeHtml(payload.date || '')} · ${total} ${total === 1 ? 'oprire' : 'opriri'}</div>
-      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      <div class="progress-label">${delivered} livrate${failed ? ` · ${failed} nelivrate` : ''} · ${remaining} rămase</div>
-      <div class="view-toggle">
-        <button class="view-toggle-btn ${currentView === 'list' ? 'active' : ''}" data-view="list">📋 Listă</button>
-        <button class="view-toggle-btn ${currentView === 'map' ? 'active' : ''}" data-view="map">🗺 Hartă</button>
+      <div class="head-row">
+        <div>
+          <div class="head-title">${escapeHtml(payload.courier || 'Curier')}</div>
+          <div class="head-sub">${escapeHtml(payload.date || '')} · ${total} ${total === 1 ? 'oprire' : 'opriri'}</div>
+        </div>
+        <div class="head-stat"><b>${resolved.length}</b><span class="of">/${total}</span><span>finalizate</span></div>
       </div>
-      ${checkinCount ? `<button class="pill-btn" id="sendCheckinsBtn" style="margin-top:9px; width:100%; text-align:center; background:var(--depot-soft); border-color:var(--depot); color:var(--depot); font-weight:700;">📍 Trimite ${checkinCount} check-in${checkinCount === 1 ? '' : '-uri'} către dispecer</button>` : ''}
+      <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <div class="segmented">
+        <button class="${currentView === 'list' ? 'active' : ''}" data-view="list">${ICONS.list} Listă</button>
+        <button class="${currentView === 'map' ? 'active' : ''}" data-view="map">${ICONS.map} Hartă</button>
+      </div>
+      ${checkinCount ? `<button class="send-checkins-btn" id="sendCheckinsBtn">${ICONS.send}<span class="btn-label">Trimite ${checkinCount} check-in${checkinCount === 1 ? '' : '-uri'} către dispecer</span></button>` : ''}
     </div>
-    <div class="stop-list" id="stopList"></div>
-    <div class="foot-note">Bifele și check-in-urile rămân salvate doar pe acest telefon, până le trimiți tu înapoi.</div>
+    <div class="content">
+      <div id="stopsRoot"></div>
+      <div class="foot-note">Bifele și check-in-urile rămân salvate doar pe acest telefon, până le trimiți tu înapoi.</div>
+    </div>
   `;
 
   root.querySelectorAll('[data-view]').forEach(btn => {
@@ -428,64 +458,97 @@ function render(){
   const sendBtn = document.getElementById('sendCheckinsBtn');
   if (sendBtn) sendBtn.addEventListener('click', sendCheckinsBack);
 
-  const list = document.getElementById('stopList');
-  payload.stops.forEach(s => {
-    const status = statuses[s.id] || 'pending';
-    const checkin = checkins[s.id];
-    const card = document.createElement('div');
-    card.className = `stop-card status-${status}`;
+  const stopsRoot = document.getElementById('stopsRoot');
+  let html = '';
 
-    const paymentChip = (s.amount != null || s.payment)
-      ? `<div class="chip chip-payment ${s.payment === 'Ramburs' ? 'cod' : ''}">${s.amount != null ? Number(s.amount).toFixed(2) + ' lei' : ''}${s.amount != null && s.payment ? ' · ' : ''}${escapeHtml(s.payment || '')}</div>`
-      : '';
-    const windowChip = s.winStart ? `<div class="chip chip-window">⏱ ${escapeHtml(s.winStart)}–${escapeHtml(s.winEnd)}</div>` : '';
-    const checkinChip = checkin ? `<div class="chip chip-window">📍 check-in salvat (±${Math.round(checkin.accuracy)}m)</div>` : '';
+  if (next) html += `<div class="section-label">Următoarea oprire</div>` + stopCardHtml(next, 'hero-card');
+  if (rest.length){
+    html += `<div class="section-label">Opriri rămase (${rest.length})</div>`;
+    rest.forEach(s => { html += stopCardHtml(s, 'stop-card'); });
+  }
+  if (resolved.length){
+    html += `<div class="section-label">Finalizate (${resolved.length})</div>`;
+    resolved.forEach(s => { html += doneCardHtml(s); });
+  }
+  stopsRoot.innerHTML = html;
 
-    card.innerHTML = `
-      <div class="stop-head">
-        <span class="stop-badge">${s.o}</span>
-        <div class="stop-title">${escapeHtml(s.name || s.addr)}</div>
-      </div>
-      ${s.name ? `<div class="stop-addr">${escapeHtml(s.addr)}</div>` : ''}
-      ${s.details ? `<div class="stop-line">📦 ${escapeHtml(s.details)}</div>` : ''}
-      ${s.products ? `<div class="stop-line">🛒 ${formatProductsWithKg(s)}</div>` : ''}
-      ${s.note ? `<div class="stop-line">💬 ${escapeHtml(s.note)}</div>` : ''}
-      <div class="chip-row">${windowChip}${paymentChip}${checkinChip}</div>
-      <div class="action-row">
-        ${s.phone ? `<a class="pill-btn" href="tel:${escapeHtml(s.phone)}">📞 Sună</a>` : ''}
-        ${s.lat != null ? `<a class="pill-btn" href="${mapsUrl(s.lat, s.lng)}" target="_blank" rel="noopener">🗺 Maps</a>` : ''}
-        ${s.lat != null ? `<a class="pill-btn" href="${wazeUrl(s.lat, s.lng)}" target="_blank" rel="noopener">🚗 Waze</a>` : ''}
-        <button class="pill-btn" data-checkin="${s.id}">${checkin ? '📍 Refă check-in' : '📍 Check-in aici'}</button>
-      </div>
-      <div class="status-row">
-        <button class="status-btn deliver ${status === 'delivered' ? 'active' : ''}" data-mark="${s.id}" data-value="delivered">✓ Livrat</button>
-        <button class="status-btn fail ${status === 'failed' ? 'active' : ''}" data-mark="${s.id}" data-value="failed">✕ Nelivrat</button>
-      </div>
-    `;
-    list.appendChild(card);
-  });
-
-  list.querySelectorAll('[data-mark]').forEach(btn => {
+  stopsRoot.querySelectorAll('[data-mark]').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.mark;
       const value = btn.dataset.value;
+      const wasResolved = !!statuses[id];
       if (statuses[id] === value) delete statuses[id];
       else statuses[id] = value;
       saveStatuses(payload.routeId, statuses);
-      render();
+      // a pending stop just getting resolved gets a beat to show the confirmed state
+      // before the list reflows it away — an undo (tapping the same value again) or a
+      // switch (delivered <-> failed) from the compact "Finalizate" rows re-renders instantly
+      if (!wasResolved){
+        const card = btn.closest('.hero-card, .stop-card');
+        btn.classList.add('active');
+        if (card) setTimeout(() => { card.classList.add('leaving'); setTimeout(render, 320); }, 260);
+        else render();
+      } else {
+        render();
+      }
     });
   });
 
-  list.querySelectorAll('[data-checkin]').forEach(btn => {
+  stopsRoot.querySelectorAll('[data-checkin]').forEach(btn => {
     btn.addEventListener('click', () => doCheckin(btn.dataset.checkin, btn));
   });
 
   updateMapMarkers(); // no-op if the map hasn't been opened yet — keeps marker colors in sync with status once it has
 }
 
+/** Full stop card — used both for the emphasized "next stop" hero and the quieter "rest" list, same markup, different class. */
+function stopCardHtml(s, cardClass){
+  const checkin = checkins[s.id];
+  const paymentChip = (s.amount != null || s.payment)
+    ? `<span class="chip cash">${ICONS.cash}${s.amount != null ? Number(s.amount).toFixed(2) + ' lei' : ''}${s.amount != null && s.payment ? ' · ' : ''}${escapeHtml(s.payment || '')}</span>`
+    : '';
+  const windowChip = s.winStart ? `<span class="chip time">${ICONS.clock}${escapeHtml(s.winStart)}–${escapeHtml(s.winEnd)}</span>` : '';
+  const productsChip = s.products ? `<span class="chip products">${ICONS.apple}${formatProductsWithKg(s)}</span>` : '';
+
+  return `
+    <div class="${cardClass}" data-id="${s.id}">
+      <div class="card-top">
+        <div class="hero-num">${s.o}</div>
+        <div>
+          <div class="card-name">${escapeHtml(s.name || s.addr)}</div>
+          ${s.name ? `<div class="card-addr">${escapeHtml(s.addr)}</div>` : ''}
+          ${s.details ? `<div class="details-line">${ICONS.building}${escapeHtml(s.details)}</div>` : ''}
+        </div>
+      </div>
+      <div class="chip-row">${windowChip}${paymentChip}${productsChip}</div>
+      ${s.note ? `<div class="note-line">${ICONS.note}${escapeHtml(s.note)}</div>` : ''}
+      <div class="icon-row">
+        ${s.phone ? `<a class="icon-btn" href="tel:${escapeHtml(s.phone)}" title="Sună">${ICONS.phone}</a>` : ''}
+        ${s.lat != null ? `<a class="icon-btn" href="${mapsUrl(s.lat, s.lng)}" target="_blank" rel="noopener" title="Deschide în Google Maps">${iconImg('icons/maps-icon.png', 'Maps')}</a>` : ''}
+        ${s.lat != null ? `<a class="icon-btn" href="${wazeUrl(s.lat, s.lng)}" target="_blank" rel="noopener" title="Deschide în Waze">${iconImg('icons/waze-icon.svg', 'Waze')}</a>` : ''}
+        <button class="icon-btn ${checkin ? 'done' : ''}" data-checkin="${s.id}" title="${checkin ? 'Refă check-in' : 'Check-in aici'}">${iconImg('icons/checkin-icon.png', 'Check-in')}</button>
+      </div>
+      <div class="status-row">
+        <button class="status-btn ok" data-mark="${s.id}" data-value="delivered">${ICONS.check} Livrat</button>
+        <button class="status-btn bad" data-mark="${s.id}" data-value="failed">${ICONS.x} Nelivrat</button>
+      </div>
+    </div>`;
+}
+
+/** Compact, muted row for an already-resolved stop — still fully functional (can flip status or undo), just out of the way. */
+function doneCardHtml(s){
+  const status = statuses[s.id];
+  return `
+    <div class="done-card" data-id="${s.id}">
+      <div class="hero-num">${s.o}</div>
+      <div class="done-name">${escapeHtml(s.name || s.addr)}<span>${escapeHtml(s.addr)}</span></div>
+      <button class="mini-status ok ${status === 'delivered' ? 'active' : ''}" data-mark="${s.id}" data-value="delivered" title="Livrat">${ICONS.check}</button>
+      <button class="mini-status bad ${status === 'failed' ? 'active' : ''}" data-mark="${s.id}" data-value="failed" title="Nelivrat">${ICONS.x}</button>
+    </div>`;
+}
+
 async function doCheckin(stopId, btn){
-  const originalText = btn.textContent;
-  btn.textContent = '📍 Se localizează…';
+  btn.classList.add('loading');
   btn.disabled = true;
   try {
     const pos = await getCurrentPosition();
@@ -496,22 +559,23 @@ async function doCheckin(stopId, btn){
       savedAt: new Date().toISOString()
     };
     saveCheckins(payload.routeId, checkins);
-    render();
+    render(); // rebuilds the button in its "done" state — loading class goes away with it
   } catch (e){
     console.error('Check-in eșuat', e);
     let msg = 'Nu am putut lua poziția GPS.';
     if (e.code === 1) msg = 'Acces la locație refuzat — permite accesul la locație pentru acest site din setările telefonului.';
     else if (e.code === 3) msg = 'A durat prea mult să localizăm — încearcă din nou, ideal afară sau lângă geam.';
     alert(msg);
-    btn.textContent = originalText;
+    btn.classList.remove('loading');
     btn.disabled = false;
   }
 }
 
 async function sendCheckinsBack(){
   const btn = document.getElementById('sendCheckinsBtn');
-  const originalText = btn.textContent;
-  btn.textContent = 'Se generează linkul…';
+  const label = btn.querySelector('.btn-label');
+  const originalText = label.textContent;
+  label.textContent = 'Se generează linkul…';
   btn.disabled = true;
 
   const entries = Object.entries(checkins).map(([stopId, c]) => {
@@ -527,7 +591,7 @@ async function sendCheckinsBack(){
   const shortLink = await shortenLink(longLink);
   const link = shortLink || longLink;
 
-  btn.textContent = originalText;
+  label.textContent = originalText;
   btn.disabled = false;
 
   const text = encodeURIComponent(`Check-in-uri traseu (${payload.courier}, ${payload.date}):\n${link}`);
