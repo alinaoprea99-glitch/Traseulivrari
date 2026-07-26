@@ -13,7 +13,7 @@ function decodeCourierData(encoded){
 }
 
 // Must stay in the exact same order as the array built in app.js's buildCourierPayload().
-const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart'];
+const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'observatii'];
 
 function addMinutesToTime(hhmm, minutesToAdd){
   const [h, m] = hhmm.split(':').map(Number);
@@ -91,6 +91,30 @@ function saveCheckins(routeId, checkins){
   }
 }
 
+// ---- Observații: free-text working notes, editable both here and in the dispatcher UI.
+// Edits made here stay local until "Trimite verificările înapoi" sends them back, at
+// which point they overwrite the matching address's note in the dispatcher's list.
+function notesStorageKey(routeId){
+  return `curier-notes:${routeId}`;
+}
+
+function loadNotes(routeId){
+  try {
+    const raw = localStorage.getItem(notesStorageKey(routeId));
+    return raw ? JSON.parse(raw) : {};
+  } catch (e){
+    return {};
+  }
+}
+
+function saveNotes(routeId, notes){
+  try {
+    localStorage.setItem(notesStorageKey(routeId), JSON.stringify(notes));
+  } catch (e){
+    console.error('Nu am putut salva observația pe acest telefon', e);
+  }
+}
+
 function getCurrentPosition(){
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation){
@@ -157,7 +181,8 @@ const ICONS = {
   list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>',
   map: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4L3 6.5v13L9 17l6 3 6-2.5v-13L15 7 9 4z"/><path d="M9 4v13M15 7v13"/></svg>',
   send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L11 13"/><path d="M21 3l-7 18-4-8-8-4 19-6z"/></svg>',
-  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5L22 20H2L12 3.5z"/><path d="M12 10v4.5M12 17.5h0"/></svg>'
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5L22 20H2L12 3.5z"/><path d="M12 10v4.5M12 17.5h0"/></svg>',
+  tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 3H5a2 2 0 0 0-2 2v6.5a2 2 0 0 0 .6 1.4l8 8a2 2 0 0 0 2.8 0l6.5-6.5a2 2 0 0 0 0-2.8l-8-8a2 2 0 0 0-1.4-.6z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/></svg>'
 };
 
 function iconImg(src, alt){
@@ -167,6 +192,7 @@ function iconImg(src, alt){
 let payload = null;
 let statuses = {};
 let checkins = {};
+let notes = {};
 let currentView = 'list';
 
 // ---- Map view: numbered stop markers, the courier's own live position, and a
@@ -425,6 +451,7 @@ function render(){
   const failed = resolved.length - delivered;
   const pct = total ? Math.round(resolved.length / total * 100) : 0;
   const checkinCount = Object.keys(checkins).length;
+  const editedNoteCount = getEditedNoteEntries().length;
 
   const next = pending[0];
   const rest = pending.slice(1);
@@ -443,7 +470,7 @@ function render(){
         <button class="${currentView === 'list' ? 'active' : ''}" data-view="list">${ICONS.list} Listă</button>
         <button class="${currentView === 'map' ? 'active' : ''}" data-view="map">${ICONS.map} Hartă</button>
       </div>
-      ${checkinCount ? `<button class="send-checkins-btn" id="sendCheckinsBtn">${ICONS.send}<span class="btn-label">Trimite ${checkinCount} check-in${checkinCount === 1 ? '' : '-uri'} către dispecer</span></button>` : ''}
+      ${(checkinCount || editedNoteCount) ? `<button class="send-checkins-btn" id="sendCheckinsBtn">${ICONS.send}<span class="btn-label">Trimite ${sendBackLabel(checkinCount, editedNoteCount)} către dispecer</span></button>` : ''}
     </div>
     <div class="content">
       <div id="stopsRoot"></div>
@@ -498,7 +525,36 @@ function render(){
     btn.addEventListener('click', () => doCheckin(btn.dataset.checkin, btn));
   });
 
+  stopsRoot.querySelectorAll('[data-obs-id]').forEach(ta => {
+    ta.addEventListener('input', () => {
+      notes[ta.dataset.obsId] = ta.value;
+      saveNotes(payload.routeId, notes);
+    });
+  });
+
   updateMapMarkers(); // no-op if the map hasn't been opened yet — keeps marker colors in sync with status once it has
+}
+
+/** Local edit (if any) wins over what the dispatcher originally sent, until the courier explicitly sends it back. */
+function getNoteValue(s){
+  return notes[s.id] != null ? notes[s.id] : (s.observatii || '');
+}
+
+/** Observații actually changed on this phone vs. what the dispatcher originally sent — these are what "send back" transmits. */
+function getEditedNoteEntries(){
+  if (!payload) return [];
+  return payload.stops.map(s => {
+    const edited = notes[String(s.id)];
+    if (edited === undefined || edited === (s.observatii || '')) return null;
+    return [s.id, edited];
+  }).filter(Boolean);
+}
+
+function sendBackLabel(checkinCount, editedNoteCount){
+  const parts = [];
+  if (checkinCount) parts.push(`${checkinCount} check-in${checkinCount === 1 ? '' : '-uri'}`);
+  if (editedNoteCount) parts.push(`${editedNoteCount} ${editedNoteCount === 1 ? 'observație' : 'observații'}`);
+  return parts.join(' și ');
 }
 
 /** Full stop card — used both for the emphasized "next stop" hero and the quieter "rest" list, same markup, different class. */
@@ -522,6 +578,10 @@ function stopCardHtml(s, cardClass){
       </div>
       <div class="chip-row">${windowChip}${paymentChip}${productsChip}</div>
       ${s.note ? `<div class="note-line">${ICONS.note}${escapeHtml(s.note)}</div>` : ''}
+      <div class="obs-editor">
+        <label class="obs-label">${ICONS.tag}Observații</label>
+        <textarea class="obs-input" data-obs-id="${s.id}" rows="2" placeholder="ex: sunat, nu răspunde — revin mai târziu">${escapeHtml(getNoteValue(s))}</textarea>
+      </div>
       <div class="icon-row">
         ${s.phone ? `<a class="icon-btn" href="tel:${escapeHtml(s.phone)}" title="Sună">${ICONS.phone}</a>` : ''}
         ${s.lat != null ? `<a class="icon-btn" href="${mapsUrl(s.lat, s.lng)}" target="_blank" rel="noopener" title="Deschide în Google Maps">${iconImg('icons/maps-icon.png', 'Maps')}</a>` : ''}
@@ -583,7 +643,7 @@ async function sendCheckinsBack(){
     return stop ? [stop.addr, c.lat, c.lng] : null;
   }).filter(Boolean);
 
-  const returnPayload = { courier: payload.courier, date: payload.date, checkins: entries };
+  const returnPayload = { courier: payload.courier, date: payload.date, checkins: entries, notes: getEditedNoteEntries() };
   const encoded = LZString.compressToEncodedURIComponent(JSON.stringify(returnPayload));
   const base = location.href.split('#')[0].replace(/curier\.html?$/i, '').replace(/\/?$/, '/');
   const longLink = `${base}index.html#checkins=${encoded}`;
@@ -603,6 +663,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (payload && payload.routeId){
     statuses = loadStatuses(payload.routeId);
     checkins = loadCheckins(payload.routeId);
+    notes = loadNotes(payload.routeId);
   }
   render();
 });
