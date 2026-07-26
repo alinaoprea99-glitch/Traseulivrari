@@ -16,6 +16,19 @@ const state = {
 
 const PAYMENT_METHODS = ['Ramburs', 'Revolut', 'OP'];
 
+const ICONS = {
+  building: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V6a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v15"/><path d="M13 21v-9a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v9"/><path d="M9 9h0M9 13h0M9 17h0"/></svg>',
+  apple: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8c-2 0-4 1.6-4 5 0 3 2 7 4 7s2-1 4-1 2 1 4 1c1.6 0 3.4-3 3.7-5"/><path d="M12 8c0-1.8 1-3.4 3-4"/></svg>',
+  note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.6 8.4A9 9 0 0 1 8 19l-4 1 1.3-3.7A8.3 8.3 0 0 1 4 11.5 8.4 8.4 0 0 1 12.5 3 8.4 8.4 0 0 1 21 11.5z"/></svg>',
+  phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5c0-1 1-2 2-2h2l2 5-2 1a11 11 0 0 0 6 6l1-2 5 2v2c0 1-1 2-2 2A15 15 0 0 1 4 5z"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="11" width="15" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l.9-4L16.5 4.4a1.5 1.5 0 0 1 2.1 0l1 1a1.5 1.5 0 0 1 0 2.1L8 19 4 20z"/><path d="M14.5 6.5l3 3"/></svg>',
+  send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 3L11 13"/><path d="M21 3l-7 18-4-8-8-4 19-6z"/></svg>',
+  emptyPin: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.4 7-12.5A7 7 0 0 0 5 9.5C5 14.6 12 22 12 22z"/><circle cx="12" cy="9.5" r="2.5"/></svg>',
+  emptyRoute: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-3-3 8-4 4 4-4 8-3-3-6 6"/><path d="M4 17l-1 4 4-1"/></svg>'
+};
+
 let map, markersLayer, routeLinesLayer;
 
 // -------------------------------------------------------------------
@@ -486,7 +499,7 @@ function renderCouriers(){
           </div>
         </div>
         ${totalToCollect > 0 ? `
-        <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--line-soft); font-size:11.5px; font-family:'JetBrains Mono',monospace; color:var(--ink-soft);">
+        <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--line-soft); font-size:11.5px; font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums; color:var(--ink-soft);">
           de încasat: <strong style="color:var(--ink);">${totalToCollect.toFixed(2)} lei</strong>
         </div>` : ''}
       </div>
@@ -1251,7 +1264,7 @@ function renderAddresses(){
   if (!state.addresses.length){
     list.innerHTML = `
       <div class="empty-state">
-        <div class="es-icon">▦</div>
+        <div class="es-icon">${ICONS.emptyPin}</div>
         <div class="es-title">Nicio adresă încărcată</div>
         <div class="es-sub">Importă un fișier CSV/Excel sau adaugă manual</div>
       </div>`;
@@ -1299,10 +1312,10 @@ function renderAddresses(){
 
     const titleLine = a.clientName ? escapeHtml(a.clientName) : escapeHtml(a.raw);
     const subAddressLine = a.clientName ? `<div class="addr-sub-addr">${escapeHtml(a.raw)}</div>` : '';
-    const detailsLine = a.details ? `<div class="addr-sub-addr">📦 ${escapeHtml(a.details)}</div>` : '';
-    const productsLine = a.products ? `<div class="addr-sub-addr">🛒 ${formatProductsWithKg(a)}</div>` : '';
+    const detailsLine = a.details ? `<div class="addr-sub-addr">${ICONS.building}${escapeHtml(a.details)}</div>` : '';
+    const productsLine = a.products ? `<div class="addr-sub-addr">${ICONS.apple}${formatProductsWithKg(a)}</div>` : '';
     const phoneLine = a.phone ? `<div class="addr-sub-addr">${escapeHtml(a.phone)}</div>` : '';
-    const noteLine = a.customerNote ? `<div class="addr-sub-addr">💬 ${escapeHtml(a.customerNote)}</div>` : '';
+    const noteLine = a.customerNote ? `<div class="addr-sub-addr">${ICONS.note}${escapeHtml(a.customerNote)}</div>` : '';
     const paymentChip = (a.amount != null || a.paymentMethod)
       ? `<div class="addr-payment-chip ${a.paymentMethod === 'Ramburs' ? 'cod' : ''}">${a.amount != null ? a.amount.toFixed(2) + ' lei' : ''}${a.amount != null && a.paymentMethod ? ' · ' : ''}${escapeHtml(a.paymentMethod || '')}</div>`
       : '';
@@ -1310,11 +1323,11 @@ function renderAddresses(){
     const cancelledBadge = a.cancelled ? `<div class="addr-status err">✕ comandă anulată <button class="addr-action-link" data-restore="${a.id}" style="font-size:10.5px;">restaurează</button></div>` : '';
     const actionRow = a.cancelled ? '' : `
         <div class="addr-action-row">
-          <button class="addr-action-link" data-edit="${a.id}">✎ editează</button>
+          <button class="addr-action-link" data-edit="${a.id}">${ICONS.pencil} editează</button>
           <span class="addr-action-sep">·</span>
           <span class="addr-action-label">realoca:</span>
           ${courierSelect}
-          ${a.manuallyAssigned ? '<span class="addr-lock-badge" title="Alocare manuală — nu va fi schimbată de repartizarea automată">🔒</span>' : ''}
+          ${a.manuallyAssigned ? `<span class="addr-lock-badge" title="Alocare manuală — nu va fi schimbată de repartizarea automată">${ICONS.lock}</span>` : ''}
         </div>`;
 
     if (a.cancelled) item.classList.add('addr-cancelled');
@@ -2850,7 +2863,7 @@ function renderRouteSummary(){
   if (!hasAny){
     container.innerHTML = `
       <div class="empty-state">
-        <div class="es-icon">→</div>
+        <div class="es-icon">${ICONS.emptyRoute}</div>
         <div class="es-title">Niciun traseu generat</div>
         <div class="es-sub">Adaugă curieri și adrese, apoi repartizează</div>
       </div>`;
@@ -2884,15 +2897,15 @@ function renderRouteSummary(){
       <div style="display:flex; align-items:center; gap:7px; margin-bottom:4px;">
         <span class="courier-dot" style="background:${c.color}"></span>
         <span style="font-weight:600; font-size:13px;">${escapeHtml(c.name)}</span>
-        <span style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--ink-soft);">
+        <span style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums; font-size:10.5px; color:var(--ink-soft);">
           ${route.totalKm.toFixed(1)} km · ${formatMinutes(route.totalMin)}
         </span>
-        <button class="send-courier-btn" data-send-courier="${c.id}">📱 trimite curierului</button>
+        <button class="send-courier-btn" data-send-courier="${c.id}">${ICONS.send} trimite curierului</button>
       </div>
       ${totalToCollect > 0 ? `
-        <div style="font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--ink-soft); margin-bottom:8px; padding-left:18px;">
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums; font-size:10.5px; color:var(--ink-soft); margin-bottom:8px; padding-left:18px;">
           de încasat total: <strong style="color:var(--ink);">${totalToCollect.toFixed(2)} lei</strong>
-          ${cashToCollect > 0 ? ` · ramburs: <strong style="color:#B5400E;">${cashToCollect.toFixed(2)} lei</strong>` : ''}
+          ${cashToCollect > 0 ? ` · ramburs: <strong style="color:var(--warn);">${cashToCollect.toFixed(2)} lei</strong>` : ''}
         </div>` : `<div style="margin-bottom:8px;"></div>`}
       <div class="route-stops" data-courier="${c.id}"></div>
     `;
@@ -2909,15 +2922,15 @@ function renderRouteSummary(){
 
       const titleLine = addr.clientName ? escapeHtml(addr.clientName) : escapeHtml(addr.raw);
       const subAddressLine = addr.clientName ? `<div class="addr-sub-addr">${escapeHtml(addr.raw)}</div>` : '';
-      const detailsLine = addr.details ? `<div class="addr-sub-addr">📦 ${escapeHtml(addr.details)}</div>` : '';
-      const productsLine = addr.products ? `<div class="addr-sub-addr">🛒 ${formatProductsWithKg(addr)}</div>` : '';
+      const detailsLine = addr.details ? `<div class="addr-sub-addr">${ICONS.building}${escapeHtml(addr.details)}</div>` : '';
+      const productsLine = addr.products ? `<div class="addr-sub-addr">${ICONS.apple}${formatProductsWithKg(addr)}</div>` : '';
       const phoneLine = addr.phone ? `<div class="addr-sub-addr">${escapeHtml(addr.phone)}</div>` : '';
       const paymentChip = (addr.amount != null || addr.paymentMethod)
         ? `<div class="addr-payment-chip ${addr.paymentMethod === 'Ramburs' ? 'cod' : ''}">${addr.amount != null ? addr.amount.toFixed(2) + ' lei' : ''}${addr.amount != null && addr.paymentMethod ? ' · ' : ''}${escapeHtml(addr.paymentMethod || '')}</div>`
         : '';
       const win = route.windows ? route.windows[addr.id] : null;
       const windowChip = win
-        ? `<div class="addr-window-chip${win.afterLimit ? ' warn' : ''}">⏱ ${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
+        ? `<div class="addr-window-chip${win.afterLimit ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
         : '';
       const isFirst = idx === 0;
       const isLast = idx === route.order.length - 1;
@@ -3339,11 +3352,11 @@ function buildStopPopup(stopNumber, courierName, addr, win){
   const nameLine = addr.clientName ? `<div class="sp-name">${escapeHtml(addr.clientName)}</div>` : '';
   const outOfAreaLine = addr.outOfArea ? `<div class="sp-window warn">⚠ în afara zonei București/Ilfov${addr.allowOutOfArea ? ' (permis manual)' : ''}</div>` : '';
   const windowLine = win
-    ? `<div class="sp-window${win.afterLimit ? ' warn' : ''}">⏱ ${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
+    ? `<div class="sp-window${win.afterLimit ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
     : '';
-  const detailsLine = addr.details ? `<div class="sp-meta">📦 ${escapeHtml(addr.details)}</div>` : '';
-  const productsLine = addr.products ? `<div class="sp-meta">🛒 ${formatProductsWithKg(addr)}</div>` : '';
-  const phoneLine = addr.phone ? `<div class="sp-meta">📞 ${escapeHtml(addr.phone)}</div>` : '';
+  const detailsLine = addr.details ? `<div class="sp-meta">${ICONS.building}${escapeHtml(addr.details)}</div>` : '';
+  const productsLine = addr.products ? `<div class="sp-meta">${ICONS.apple}${formatProductsWithKg(addr)}</div>` : '';
+  const phoneLine = addr.phone ? `<div class="sp-meta">${ICONS.phone}${escapeHtml(addr.phone)}</div>` : '';
   const paymentLine = (addr.amount != null || addr.paymentMethod)
     ? `<div class="sp-payment">${addr.amount != null ? addr.amount.toFixed(2) + ' lei' : ''}${addr.amount != null && addr.paymentMethod ? ' · ' : ''}${escapeHtml(addr.paymentMethod || '')}</div>`
     : '';
@@ -3460,7 +3473,7 @@ function redrawMap(){
         const ringWidth = isLowConfidence ? 3 : 2;
         const icon = L.divIcon({
           className: '',
-          html: `<div style="background:${c.color};color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;border:${ringWidth}px solid ${ringColor};box-shadow:0 1px 4px rgba(0,0,0,0.25);">${idx+1}</div>`,
+          html: `<div style="background:${c.color};color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums;font-size:11px;font-weight:600;border:${ringWidth}px solid ${ringColor};box-shadow:0 1px 4px rgba(0,0,0,0.25);">${idx+1}</div>`,
           iconSize: [22,22],
           iconAnchor: [11,11]
         });
