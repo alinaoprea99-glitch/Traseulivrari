@@ -13,7 +13,7 @@ function decodeCourierData(encoded){
 }
 
 // Must stay in the exact same order as the array built in app.js's buildCourierPayload().
-const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart'];
+const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'products', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart'];
 
 function addMinutesToTime(hhmm, minutesToAdd){
   const [h, m] = hhmm.split(':').map(Number);
@@ -186,6 +186,7 @@ function updateMapMarkers(){
       <div class="stop-popup" style="font-family:'Inter',sans-serif;">
         <div style="font-weight:600; margin-bottom:2px;">${escapeHtml(s.name || s.addr)}</div>
         <div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">${escapeHtml(s.addr)}</div>
+        ${s.products ? `<div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">🛒 ${escapeHtml(s.products)}</div>` : ''}
         <button class="pill-btn" data-eta-for="${s.id}" style="cursor:pointer;">⏱ Cât mai am până aici?</button>
       </div>
     `);
@@ -217,11 +218,51 @@ async function fetchAndDrawRouteLine(){
   }
 }
 
+// ---- Live "traffic feel" calibration ------------------------------------------------
+// No paid traffic API involved: OSRM only knows free-flow road speeds, so its ETA can be
+// well off when the courier is actually stuck (or unusually free) in real traffic. Instead,
+// a rolling window of the courier's own recent GPS fixes gives an OBSERVED speed, which
+// gets compared against the speed OSRM assumed for the same remaining route — if the
+// courier is moving at 50% of the assumed speed, the remaining drive time is scaled up
+// accordingly. It's a heuristic, not real traffic data, so it only kicks in once there's
+// enough recent genuine movement to trust (a parked/delivering courier reads ~0 km/h,
+// which must NOT be mistaken for "gridlock").
+const RECENT_FIXES_WINDOW_MS = 3 * 60 * 1000;
+const MIN_TRUSTED_DISTANCE_KM = 0.15;
+const MIN_TRUSTED_ELAPSED_H = 60 / 3600; // 60 seconds
+const TRAFFIC_FACTOR_MIN = 0.6;
+const TRAFFIC_FACTOR_MAX = 2.5;
+let recentFixes = [];
+
+function haversineKm(lat1, lon1, lat2, lon2){
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Returns the courier's observed speed (km/h) over the recent window, or null if there isn't yet enough trustworthy movement to estimate it from (too little time/distance covered — e.g. still parked at a stop). */
+function getObservedSpeedKmh(){
+  if (recentFixes.length < 2) return null;
+  const oldest = recentFixes[0];
+  const newest = recentFixes[recentFixes.length - 1];
+  const distKm = haversineKm(oldest.lat, oldest.lng, newest.lat, newest.lng);
+  const elapsedH = (newest.t - oldest.t) / 3600000;
+  if (distKm < MIN_TRUSTED_DISTANCE_KM || elapsedH < MIN_TRUSTED_ELAPSED_H) return null;
+  return distKm / elapsedH;
+}
+
 function startLocationWatch(){
   if (watchId != null || !navigator.geolocation) return;
   watchId = navigator.geolocation.watchPosition(
     (pos) => {
       lastKnownPos = pos.coords;
+
+      const now = Date.now();
+      recentFixes.push({ lat: pos.coords.latitude, lng: pos.coords.longitude, t: now });
+      recentFixes = recentFixes.filter(f => now - f.t <= RECENT_FIXES_WINDOW_MS);
+
       if (!courierMap) return;
       const latlng = [pos.coords.latitude, pos.coords.longitude];
       if (!meMarker){
@@ -240,8 +281,19 @@ function stopLocationWatch(){
     navigator.geolocation.clearWatch(watchId);
     watchId = null;
   }
+  recentFixes = [];
 }
 
+const STOP_HANDOFF_BUFFER_MIN = 10; // same handoff/buffer assumption as the dispatcher's own route planning (app.js STOP_BUFFER_MIN)
+
+/**
+ * Estimates arrival at the tapped stop by routing through every stop still PENDING
+ * (not yet delivered/failed) up to and including it, in visiting order — never a
+ * straight line from the courier's current position to just that one stop. A courier
+ * mid-route (say, just finished stop 3 of 10) still has to actually complete stops
+ * 4-9 first if a customer at stop 10 asks "how long until you get here"; a direct
+ * route from the courier's live position to stop 10 alone would badly underestimate it.
+ */
 async function showEtaForStop(stop){
   const banner = document.getElementById('etaBanner');
   const hint = document.getElementById('locateHint');
@@ -251,17 +303,56 @@ async function showEtaForStop(stop){
     hint.textContent = 'Îți aștept poziția GPS — permite accesul la locație și încearcă din nou în câteva secunde.';
     return;
   }
+
+  const stopStatus = statuses[stop.id] || 'pending';
   hint.style.display = 'none';
   banner.style.display = 'block';
+
+  if (stopStatus !== 'pending'){
+    const label = stopStatus === 'delivered' ? '✓ deja marcată livrată' : '✕ deja marcată nelivrată';
+    banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">${label}</div>`;
+    return;
+  }
+
   banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Se calculează…</div>`;
+
+  const remaining = payload.stops
+    .filter(s => s.o <= stop.o && (statuses[s.id] || 'pending') === 'pending' && s.lat != null)
+    .sort((a, b) => a.o - b.o);
+
+  if (!remaining.length) return; // shouldn't happen since stop itself is pending and always qualifies
+
+  const waypoints = [`${lastKnownPos.longitude},${lastKnownPos.latitude}`, ...remaining.map(s => `${s.lng},${s.lat}`)];
   try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${lastKnownPos.longitude},${lastKnownPos.latitude};${stop.lng},${stop.lat}?overview=false`;
+    const url = `https://router.project-osrm.org/route/v1/driving/${waypoints.join(';')}?overview=false`;
     const res = await fetch(url);
     const data = await res.json();
     if (data.code === 'Ok' && data.routes && data.routes.length){
-      const min = Math.round(data.routes[0].duration / 60);
-      const km = (data.routes[0].distance / 1000).toFixed(1);
-      banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">⏱ ~${min} min · ${km} km de la poziția ta curentă</div>`;
+      const driveMin = data.routes[0].duration / 60;
+      const distanceKm = data.routes[0].distance / 1000;
+
+      // Calibrate against real, currently-observed traffic: compare the courier's recent
+      // actual speed to the speed OSRM assumed for this remaining stretch. No adjustment
+      // (and no claim of calibration) is made until there's a trustworthy recent sample.
+      let adjustedDriveMin = driveMin;
+      let trafficNote = '';
+      const assumedSpeedKmh = driveMin > 0 ? distanceKm / (driveMin / 60) : null;
+      const observedSpeedKmh = getObservedSpeedKmh();
+      if (assumedSpeedKmh && observedSpeedKmh){
+        const factor = Math.min(Math.max(assumedSpeedKmh / observedSpeedKmh, TRAFFIC_FACTOR_MIN), TRAFFIC_FACTOR_MAX);
+        adjustedDriveMin = driveMin * factor;
+        if (factor > 1.15) trafficNote = ' · trafic mai aglomerat decât normal';
+        else if (factor < 0.87) trafficNote = ' · trafic mai fluid decât normal';
+        else trafficNote = ' · calibrat după viteza ta actuală';
+      }
+
+      const stopsBefore = remaining.length - 1; // pending stops the courier still hands off before reaching the target
+      const totalMin = Math.round(adjustedDriveMin + stopsBefore * STOP_HANDOFF_BUFFER_MIN);
+      const km = distanceKm.toFixed(1);
+      const arrival = new Date(Date.now() + totalMin * 60000);
+      const arrivalStr = `${arrival.getHours().toString().padStart(2, '0')}:${arrival.getMinutes().toString().padStart(2, '0')}`;
+      const viaText = stopsBefore > 0 ? ` · via ${stopsBefore} ${stopsBefore === 1 ? 'oprire rămasă' : 'opriri rămase'}` : '';
+      banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">⏱ ~${totalMin} min (sosire ~${arrivalStr}) · ${km} km${viaText}${trafficNote}</div>`;
     } else {
       banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Nu am putut calcula timpul — încearcă din nou.</div>`;
     }
@@ -348,6 +439,7 @@ function render(){
       </div>
       ${s.name ? `<div class="stop-addr">${escapeHtml(s.addr)}</div>` : ''}
       ${s.details ? `<div class="stop-line">📦 ${escapeHtml(s.details)}</div>` : ''}
+      ${s.products ? `<div class="stop-line">🛒 ${escapeHtml(s.products)}</div>` : ''}
       ${s.note ? `<div class="stop-line">💬 ${escapeHtml(s.note)}</div>` : ''}
       <div class="chip-row">${windowChip}${paymentChip}${checkinChip}</div>
       <div class="action-row">
