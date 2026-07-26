@@ -712,9 +712,15 @@ function showEditAddressForm(addrId){
         <label>Detalii (bloc/scară/ap/interfon)</label>
         <input type="text" id="eaDetails" value="${escapeHtml(addr.details)}">
       </div>
-      <div class="field" style="margin-bottom:7px;">
-        <label>Produse</label>
-        <input type="text" id="eaProducts" value="${escapeHtml(addr.products)}" placeholder="ex: 6x Piersici Turtite, 1x Mere de Vara">
+      <div class="field-row" style="margin-bottom:7px;">
+        <div class="field" style="flex:2;">
+          <label>Produse</label>
+          <input type="text" id="eaProducts" value="${escapeHtml(addr.products)}" placeholder="ex: 6x Piersici Turtite, 1x Mere de Vara">
+        </div>
+        <div class="field">
+          <label>Total kg</label>
+          <input type="text" id="eaProductsKg" value="${addr.productsKg != null ? addr.productsKg : ''}">
+        </div>
       </div>
       <div class="field-row" style="margin-bottom:7px;">
         <div class="field">
@@ -761,6 +767,8 @@ function showEditAddressForm(addrId){
     addr.phone = document.getElementById('eaPhone').value.trim();
     addr.details = document.getElementById('eaDetails').value.trim();
     addr.products = document.getElementById('eaProducts').value.trim();
+    const kgInput = document.getElementById('eaProductsKg').value.trim();
+    addr.productsKg = kgInput ? parseFloat(kgInput.replace(',', '.')) : null;
     addr.amount = parseAmount(document.getElementById('eaAmount').value);
     addr.paymentMethod = document.getElementById('eaPayment').value;
     addr.customerNote = document.getElementById('eaNote').value.trim();
@@ -848,9 +856,15 @@ function showManualAddForm(){
         <label>Detalii (bloc/scară/ap/interfon)</label>
         <input type="text" id="maDetails" placeholder="ex: Bloc A2, et 3, ap 12, interfon 12">
       </div>
-      <div class="field" style="margin-bottom:7px;">
-        <label>Produse</label>
-        <input type="text" id="maProducts" placeholder="ex: 6x Piersici Turtite, 1x Mere de Vara">
+      <div class="field-row" style="margin-bottom:7px;">
+        <div class="field" style="flex:2;">
+          <label>Produse</label>
+          <input type="text" id="maProducts" placeholder="ex: 6x Piersici Turtite, 1x Mere de Vara">
+        </div>
+        <div class="field">
+          <label>Total kg</label>
+          <input type="text" id="maProductsKg">
+        </div>
       </div>
       <div class="field-row" style="margin-bottom:7px;">
         <div class="field">
@@ -887,6 +901,7 @@ function showManualAddForm(){
       raw: address,
       details: document.getElementById('maDetails').value.trim(),
       products: document.getElementById('maProducts').value.trim(),
+      productsKg: document.getElementById('maProductsKg').value.trim() ? parseFloat(document.getElementById('maProductsKg').value.trim().replace(',', '.')) : null,
       clientName: document.getElementById('maName').value.trim(),
       phone: document.getElementById('maPhone').value.trim(),
       amount: parseAmount(document.getElementById('maAmount').value),
@@ -912,7 +927,7 @@ function showManualAddForm(){
  *
  * Column order MUST stay in sync with the `header` array in exportRoutesXlsx().
  */
-const EXPORTED_EXCEL_COLUMNS = ['courierName', 'interval', 'orderNumber', 'firstName', 'lastName', 'phone', 'raw', 'details', 'products', 'paymentMethod', 'amount', 'customerNote'];
+const EXPORTED_EXCEL_COLUMNS = ['courierName', 'interval', 'orderNumber', 'firstName', 'lastName', 'phone', 'raw', 'details', 'products', 'productsKg', 'paymentMethod', 'amount', 'customerNote'];
 
 function parseExportedExcelRows(rows){
   const parsed = [];
@@ -930,6 +945,7 @@ function parseExportedExcelRows(rows){
     entry.raw = String(entry.raw || '').trim();
     entry.details = String(entry.details || '').trim();
     entry.products = String(entry.products || '').trim();
+    entry.productsKg = entry.productsKg !== '' && entry.productsKg != null ? parseFloat(String(entry.productsKg).replace(',', '.')) : null;
     entry.paymentMethod = String(entry.paymentMethod || '').trim();
     entry.amount = parseAmount(entry.amount);
     entry.customerNote = String(entry.customerNote || '').trim();
@@ -966,6 +982,7 @@ function importFromExportedExcel(file){
           raw: r.raw,
           details: r.details,
           products: r.products,
+          productsKg: r.productsKg,
           clientName: [r.firstName, r.lastName].filter(Boolean).join(' '),
           phone: r.phone,
           amount: r.amount,
@@ -1114,11 +1131,13 @@ function showColumnMapper(rows){
       const productName = getCell(row, 'productName');
       const quantity = getCell(row, 'quantity');
       const productEntry = productName ? `${quantity ? quantity + 'x ' : ''}${productName}` : '';
+      const quantityKg = parseFloat(quantity.replace(',', '.')) || 0; // every product is sold by the kg — quantity IS the weight
 
       const streetRaw = getCell(row, 'street');
       if (!streetRaw){
         if (productEntry && lastAddedAddr){
           lastAddedAddr.products = lastAddedAddr.products ? `${lastAddedAddr.products}, ${productEntry}` : productEntry;
+          lastAddedAddr.productsKg = (lastAddedAddr.productsKg || 0) + quantityKg;
         }
         continue;
       }
@@ -1144,6 +1163,7 @@ function showColumnMapper(rows){
         amount: colMap.amount !== null ? parseAmount(row[colMap.amount]) : null,
         paymentMethod: colMap.paymentMethod !== null ? normalizePaymentMethod(row[colMap.paymentMethod]) : '',
         products: productEntry,
+        productsKg: productEntry ? quantityKg : null,
         customerNote: getCell(row, 'customerNote')
       });
       imported++;
@@ -1187,6 +1207,7 @@ function addAddress(data){
     amount: data.amount ?? null,
     paymentMethod: data.paymentMethod || '',
     products: data.products || '', // e.g. "6x Piersici Turtite, 1x Mere de Vara" — what's actually being delivered
+    productsKg: data.productsKg ?? null, // total weight — every product is sold by the kg, so this is just the summed quantities
     customerNote: data.customerNote || '',
     lat: null,
     lng: null,
@@ -1278,7 +1299,7 @@ function renderAddresses(){
     const titleLine = a.clientName ? escapeHtml(a.clientName) : escapeHtml(a.raw);
     const subAddressLine = a.clientName ? `<div class="addr-sub-addr">${escapeHtml(a.raw)}</div>` : '';
     const detailsLine = a.details ? `<div class="addr-sub-addr">📦 ${escapeHtml(a.details)}</div>` : '';
-    const productsLine = a.products ? `<div class="addr-sub-addr">🛒 ${escapeHtml(a.products)}</div>` : '';
+    const productsLine = a.products ? `<div class="addr-sub-addr">🛒 ${formatProductsWithKg(a)}</div>` : '';
     const phoneLine = a.phone ? `<div class="addr-sub-addr">${escapeHtml(a.phone)}</div>` : '';
     const noteLine = a.customerNote ? `<div class="addr-sub-addr">💬 ${escapeHtml(a.customerNote)}</div>` : '';
     const paymentChip = (a.amount != null || a.paymentMethod)
@@ -2782,7 +2803,7 @@ function renderRouteSummary(){
       const titleLine = addr.clientName ? escapeHtml(addr.clientName) : escapeHtml(addr.raw);
       const subAddressLine = addr.clientName ? `<div class="addr-sub-addr">${escapeHtml(addr.raw)}</div>` : '';
       const detailsLine = addr.details ? `<div class="addr-sub-addr">📦 ${escapeHtml(addr.details)}</div>` : '';
-      const productsLine = addr.products ? `<div class="addr-sub-addr">🛒 ${escapeHtml(addr.products)}</div>` : '';
+      const productsLine = addr.products ? `<div class="addr-sub-addr">🛒 ${formatProductsWithKg(addr)}</div>` : '';
       const phoneLine = addr.phone ? `<div class="addr-sub-addr">${escapeHtml(addr.phone)}</div>` : '';
       const paymentChip = (addr.amount != null || addr.paymentMethod)
         ? `<div class="addr-payment-chip ${addr.paymentMethod === 'Ramburs' ? 'cod' : ''}">${addr.amount != null ? addr.amount.toFixed(2) + ' lei' : ''}${addr.amount != null && addr.paymentMethod ? ' · ' : ''}${escapeHtml(addr.paymentMethod || '')}</div>`
@@ -2937,7 +2958,7 @@ function buildCourierPayload(courier, route){
     if (!a) return null;
     const win = route.windows ? route.windows[addrId] : null;
     return [
-      a.id, idx + 1, a.clientName || '', a.phone || '', a.raw, a.details || '', a.products || '', a.customerNote || '',
+      a.id, idx + 1, a.clientName || '', a.phone || '', a.raw, a.details || '', a.products || '', a.productsKg, a.customerNote || '',
       a.amount, a.paymentMethod || '',
       Math.round(a.lat * 1e6) / 1e6, Math.round(a.lng * 1e6) / 1e6,
       win ? win.windowStart : ''
@@ -3208,7 +3229,7 @@ function buildStopPopup(stopNumber, courierName, addr, win){
     ? `<div class="sp-window${win.afterLimit ? ' warn' : ''}">⏱ ${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
     : '';
   const detailsLine = addr.details ? `<div class="sp-meta">📦 ${escapeHtml(addr.details)}</div>` : '';
-  const productsLine = addr.products ? `<div class="sp-meta">🛒 ${escapeHtml(addr.products)}</div>` : '';
+  const productsLine = addr.products ? `<div class="sp-meta">🛒 ${formatProductsWithKg(addr)}</div>` : '';
   const phoneLine = addr.phone ? `<div class="sp-meta">📞 ${escapeHtml(addr.phone)}</div>` : '';
   const paymentLine = (addr.amount != null || addr.paymentMethod)
     ? `<div class="sp-payment">${addr.amount != null ? addr.amount.toFixed(2) + ' lei' : ''}${addr.amount != null && addr.paymentMethod ? ' · ' : ''}${escapeHtml(addr.paymentMethod || '')}</div>`
@@ -3559,7 +3580,7 @@ function splitClientName(fullName){
 }
 
 function exportRoutesXlsx(){
-  const header = ['Curier', 'Interval Livrare', 'Nr. Comanda', 'First Name (Shipping)', 'Last Name (Shipping)', 'Phone (Billing)', 'Adresa', 'Detalii', 'Produse', 'Payment Method Title', 'Order Total Amount', 'Customer Note'];
+  const header = ['Curier', 'Interval Livrare', 'Nr. Comanda', 'First Name (Shipping)', 'Last Name (Shipping)', 'Phone (Billing)', 'Adresa', 'Detalii', 'Produse', 'Total Kg', 'Payment Method Title', 'Order Total Amount', 'Customer Note'];
   const rows = [header];
   let fallbackOrderNo = 1;
 
@@ -3578,7 +3599,7 @@ function exportRoutesXlsx(){
       rows.push([
         c.name, interval, orderNo,
         firstName, lastName, addr.phone || '',
-        addr.raw, addr.details || '', addr.products || '',
+        addr.raw, addr.details || '', addr.products || '', addr.productsKg != null ? addr.productsKg : '',
         addr.paymentMethod || '', addr.amount != null ? addr.amount : '',
         addr.customerNote || ''
       ]);
@@ -3588,7 +3609,7 @@ function exportRoutesXlsx(){
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [
     {wch:12},{wch:14},{wch:11},{wch:18},{wch:16},{wch:14},
-    {wch:38},{wch:30},{wch:30},{wch:16},{wch:14},{wch:30}
+    {wch:38},{wch:30},{wch:30},{wch:10},{wch:16},{wch:14},{wch:30}
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Trasee');
@@ -3602,4 +3623,16 @@ function escapeHtml(str){
   const div = document.createElement('div');
   div.textContent = str ?? '';
   return div.innerHTML;
+}
+
+/** "2x Mere, 4x Cireșe" + productsKg -> "2x Mere, 4x Cireșe · Total: 6 kg" (escaped, ready for innerHTML). */
+function formatProductsWithKg(addr){
+  if (!addr.products) return '';
+  const kgSuffix = addr.productsKg != null ? ` · Total: ${formatKg(addr.productsKg)}` : '';
+  return `${escapeHtml(addr.products)}${kgSuffix}`;
+}
+
+function formatKg(kg){
+  const rounded = Math.round(kg * 100) / 100;
+  return `${rounded % 1 === 0 ? rounded : rounded.toFixed(2)} kg`;
 }

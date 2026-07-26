@@ -13,7 +13,7 @@ function decodeCourierData(encoded){
 }
 
 // Must stay in the exact same order as the array built in app.js's buildCourierPayload().
-const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'products', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart'];
+const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart'];
 
 function addMinutesToTime(hhmm, minutesToAdd){
   const [h, m] = hhmm.split(':').map(Number);
@@ -127,6 +127,15 @@ function escapeHtml(str){
   return div.innerHTML;
 }
 
+/** "2x Mere, 4x Cireșe" + productsKg -> "2x Mere, 4x Cireșe · Total: 6 kg" (escaped, ready for innerHTML). Mirrors app.js's formatProductsWithKg. */
+function formatProductsWithKg(s){
+  if (!s.products) return '';
+  if (s.productsKg == null) return escapeHtml(s.products);
+  const rounded = Math.round(s.productsKg * 100) / 100;
+  const kgText = rounded % 1 === 0 ? rounded : rounded.toFixed(2);
+  return `${escapeHtml(s.products)} · Total: ${kgText} kg`;
+}
+
 function mapsUrl(lat, lng){
   return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
 }
@@ -186,7 +195,7 @@ function updateMapMarkers(){
       <div class="stop-popup" style="font-family:'Inter',sans-serif;">
         <div style="font-weight:600; margin-bottom:2px;">${escapeHtml(s.name || s.addr)}</div>
         <div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">${escapeHtml(s.addr)}</div>
-        ${s.products ? `<div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">🛒 ${escapeHtml(s.products)}</div>` : ''}
+        ${s.products ? `<div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">🛒 ${formatProductsWithKg(s)}</div>` : ''}
         <button class="pill-btn" data-eta-for="${s.id}" style="cursor:pointer;">⏱ Cât mai am până aici?</button>
       </div>
     `);
@@ -439,7 +448,7 @@ function render(){
       </div>
       ${s.name ? `<div class="stop-addr">${escapeHtml(s.addr)}</div>` : ''}
       ${s.details ? `<div class="stop-line">📦 ${escapeHtml(s.details)}</div>` : ''}
-      ${s.products ? `<div class="stop-line">🛒 ${escapeHtml(s.products)}</div>` : ''}
+      ${s.products ? `<div class="stop-line">🛒 ${formatProductsWithKg(s)}</div>` : ''}
       ${s.note ? `<div class="stop-line">💬 ${escapeHtml(s.note)}</div>` : ''}
       <div class="chip-row">${windowChip}${paymentChip}${checkinChip}</div>
       <div class="action-row">
