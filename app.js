@@ -1217,7 +1217,8 @@ function addAddress(data){
     outOfArea: false,        // true if geocoding only found results outside the Bucharest/Ilfov service area
     allowOutOfArea: false,   // true if the user explicitly opted in to allow this address outside the service area
     courierId: data.courierId ?? null,
-    manuallyAssigned: data.manuallyAssigned ?? false  // true once the courier was set explicitly (reassign dropdown, or a recovered courier-column import)
+    manuallyAssigned: data.manuallyAssigned ?? false, // true once the courier was set explicitly (reassign dropdown, or a recovered courier-column import)
+    cancelled: data.cancelled ?? false // order cancelled after routes/time windows were already communicated — pulled off the map/route but kept as a record, not deleted
   };
   state.addresses.push(addr);
   return addr;
@@ -1306,6 +1307,17 @@ function renderAddresses(){
       ? `<div class="addr-payment-chip ${a.paymentMethod === 'Ramburs' ? 'cod' : ''}">${a.amount != null ? a.amount.toFixed(2) + ' lei' : ''}${a.amount != null && a.paymentMethod ? ' · ' : ''}${escapeHtml(a.paymentMethod || '')}</div>`
       : '';
 
+    const cancelledBadge = a.cancelled ? `<div class="addr-status err">✕ comandă anulată <button class="addr-action-link" data-restore="${a.id}" style="font-size:10.5px;">restaurează</button></div>` : '';
+    const actionRow = a.cancelled ? '' : `
+        <div class="addr-action-row">
+          <button class="addr-action-link" data-edit="${a.id}">✎ editează</button>
+          <span class="addr-action-sep">·</span>
+          <span class="addr-action-label">realoca:</span>
+          ${courierSelect}
+          ${a.manuallyAssigned ? '<span class="addr-lock-badge" title="Alocare manuală — nu va fi schimbată de repartizarea automată">🔒</span>' : ''}
+        </div>`;
+
+    if (a.cancelled) item.classList.add('addr-cancelled');
     item.innerHTML = `
       <span class="addr-badge">${idx + 1}</span>
       <div class="addr-text">
@@ -1316,18 +1328,17 @@ function renderAddresses(){
         ${phoneLine}
         ${noteLine}
         ${paymentChip}
+        ${cancelledBadge}
         ${statusHtml}
-        <div class="addr-action-row">
-          <button class="addr-action-link" data-edit="${a.id}">✎ editează</button>
-          <span class="addr-action-sep">·</span>
-          <span class="addr-action-label">realoca:</span>
-          ${courierSelect}
-          ${a.manuallyAssigned ? '<span class="addr-lock-badge" title="Alocare manuală — nu va fi schimbată de repartizarea automată">🔒</span>' : ''}
-        </div>
+        ${actionRow}
       </div>
       <button class="addr-remove" data-id="${a.id}" title="Șterge">×</button>
     `;
     list.appendChild(item);
+  });
+
+  list.querySelectorAll('[data-restore]').forEach(btn => {
+    btn.addEventListener('click', () => restoreCancelledStop(parseInt(btn.dataset.restore)));
   });
 
   list.querySelectorAll('.addr-courier-select').forEach(sel => {
@@ -2636,6 +2647,102 @@ async function computeOptimizedRoute(courier, stops){
   }
 }
 
+/**
+ * Refreshes a route's real driving times/geometry/delivery windows for its EXISTING stop
+ * order, left completely untouched — used after cancelling a single stop. Unlike
+ * computeOptimizedRoute, this never reorders or reassigns anything (no 2-opt, no
+ * sectorizing): every other customer's stop stays in the exact position already
+ * communicated, only the timing gets corrected so a cancelled delivery doesn't leave a
+ * stale (too-long) estimate behind.
+ */
+async function recomputeRouteFixedOrder(courier, route){
+  const stops = route.order.map(id => state.addresses.find(a => a.id === id)).filter(Boolean);
+  const end = courier.sameAsStart || courier.end.status !== 'ok' ? courier.start : courier.end;
+  const points = [courier.start, ...stops.map(s => ({lat: s.lat, lng: s.lng})), end];
+
+  try {
+    const matrix = await fetchDurationMatrix(points);
+    if (!matrix) throw new Error('Table service returned no data');
+
+    const legDurationsMin = [];
+    for (let i = 0; i < points.length - 1; i++) legDurationsMin.push(matrix[i][i + 1] / 60);
+    const totalMin = legDurationsMin.reduce((s, m) => s + m, 0);
+
+    const routeCoordStr = points.map(p => `${p.lng},${p.lat}`).join(';');
+    let geometry = null, totalKm = null;
+    try {
+      const routeUrl = `https://router.project-osrm.org/route/v1/driving/${routeCoordStr}?overview=full&geometries=geojson`;
+      const routeRes = await fetch(routeUrl);
+      const routeData = await routeRes.json();
+      if (routeData.code === 'Ok' && routeData.routes && routeData.routes.length){
+        geometry = routeData.routes[0].geometry;
+        totalKm = routeData.routes[0].distance / 1000;
+      }
+    } catch (e){
+      console.error('OSRM route geometry fetch failed', e);
+    }
+    if (totalKm == null) totalKm = totalMin / 60 * 35;
+
+    route.totalKm = totalKm;
+    route.totalMin = totalMin;
+    route.geometry = geometry;
+    route.legDurationsMin = legDurationsMin;
+    computeDeliveryWindows(courier, route);
+  } catch (e){
+    console.error('Recalcul după anulare eșuat, folosesc estimarea aproximativă existentă', e);
+    recalcRouteDistance(courier.id);
+  }
+}
+
+/**
+ * Marks an order as cancelled — pulled off the map and out of its courier's route (so the
+ * courier no longer drives there), WITHOUT touching the order/sequence of any other stop
+ * already communicated to other customers. The address itself is kept (not deleted), just
+ * flagged, so it stays visible as a record in the Adrese tab and can be restored if marked
+ * by mistake.
+ */
+async function cancelStop(addrId){
+  const addr = state.addresses.find(a => a.id === addrId);
+  if (!addr) return;
+  if (!confirm(`Sigur vrei să anulezi comanda pentru "${addr.clientName || addr.raw}"? Va fi scoasă din traseu și de pe hartă (dar rămâne vizibilă, marcată anulată, în lista de adrese).`)) return;
+
+  addr.cancelled = true;
+  const courierId = addr.courierId;
+  const route = state.routes[courierId];
+
+  if (route){
+    const idx = route.order.indexOf(addrId);
+    if (idx !== -1) route.order.splice(idx, 1);
+    if (route.order.length){
+      const courier = state.couriers.find(c => c.id === courierId);
+      await recomputeRouteFixedOrder(courier, route);
+    } else {
+      delete state.routes[courierId];
+    }
+  }
+
+  renderAddresses();
+  renderCouriers();
+  renderRouteSummary();
+  redrawMap();
+  updateMapTopBar();
+  document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+  showToast(`Comandă anulată${route ? ' — traseul rămas a fost actualizat, fără reordonare' : ''}.`);
+}
+
+/** Undoes a mistaken cancellation — unassigns the address so it can be added back into a route via "Repartizează automat" or manual reassign. */
+function restoreCancelledStop(addrId){
+  const addr = state.addresses.find(a => a.id === addrId);
+  if (!addr) return;
+  addr.cancelled = false;
+  addr.courierId = null;
+  addr.manuallyAssigned = false;
+  renderAddresses();
+  renderCouriers();
+  redrawMap();
+  showToast('Comandă restaurată — nerepartizată, o poți aloca din nou.');
+}
+
 function fallbackRoute(courier, stops, end){
   // simple nearest-neighbor ordering, straight-line distances
   const remaining = [...stops];
@@ -2832,6 +2939,7 @@ function renderRouteSummary(){
             <select class="rs-courier-select" data-id="${addr.id}">
               ${state.couriers.map(co => `<option value="${co.id}" ${co.id === c.id ? 'selected' : ''}>${escapeHtml(co.name)}</option>`).join('')}
             </select>
+            <button class="addr-action-link" data-cancel-stop="${addr.id}" style="color:var(--danger); margin-left:8px;" title="Scoate din traseu, fără să reordoneze restul">✕ Anulează comandă</button>
           </div>
         </div>
         <div class="rs-order-buttons">
@@ -2888,6 +2996,11 @@ function wireRouteStopControls(container){
   });
   container.querySelectorAll('[data-move-down]').forEach(btn => {
     btn.addEventListener('click', () => moveStopByOffset(parseInt(btn.dataset.moveDown), 1));
+  });
+
+  // cancel order — pulls it off the map/route without reordering anything else
+  container.querySelectorAll('[data-cancel-stop]').forEach(btn => {
+    btn.addEventListener('click', () => cancelStop(parseInt(btn.dataset.cancelStop)));
   });
 
   // per-row courier reassignment
@@ -3377,7 +3490,7 @@ function redrawMap(){
       legendHtml += `<div class="lg-row"><span class="lg-dot" style="background:${c.color}"></span><span class="lg-name">${escapeHtml(c.name)}</span><span class="lg-dist">${route.totalKm.toFixed(1)} km</span></div>`;
     } else {
       // un-routed geocoded addresses assigned to this courier
-      state.addresses.filter(a => a.courierId === c.id && a.status === 'ok').forEach(addr => {
+      state.addresses.filter(a => a.courierId === c.id && a.status === 'ok' && !a.cancelled).forEach(addr => {
         const m = L.marker([addr.lat, addr.lng], { icon: makeDotIcon(c.color, addr), draggable: true }).addTo(markersLayer);
         m.bindPopup(buildStopPopup(null, c.name, addr));
         m.on('dragend', e => onAddressMarkerDragged(addr.id, e.target.getLatLng()));
@@ -3387,7 +3500,7 @@ function redrawMap(){
   });
 
   // unassigned geocoded addresses
-  state.addresses.filter(a => !a.courierId && a.status === 'ok').forEach(addr => {
+  state.addresses.filter(a => !a.courierId && a.status === 'ok' && !a.cancelled).forEach(addr => {
     const m = L.marker([addr.lat, addr.lng], { icon: makeDotIcon('#999', addr), draggable: true }).addTo(markersLayer);
     m.bindPopup(buildStopPopup(null, 'Nerepartizat', addr));
     m.on('dragend', e => onAddressMarkerDragged(addr.id, e.target.getLatLng()));
