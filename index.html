@@ -292,7 +292,7 @@ input[type=file]{display:none;}
   text-transform:uppercase;
   letter-spacing:0.03em;
 }
-.field input[type=text], .field select{
+.field input[type=text], .field select, .field textarea{
   width:100%;
   padding:8px 10px;
   border:1px solid var(--line);
@@ -302,7 +302,8 @@ input[type=file]{display:none;}
   background:var(--white);
   color:var(--ink);
 }
-.field input[type=text]:focus, .field select:focus{
+.field textarea{resize:vertical; box-sizing:border-box; line-height:1.4;}
+.field input[type=text]:focus, .field select:focus, .field textarea:focus{
   outline:2px solid var(--route);
   outline-offset:-1px;
   border-color:var(--route);
@@ -577,6 +578,19 @@ input[type=file]{display:none;}
   color:var(--danger);
   background:var(--warn-soft);
 }
+.addr-obs-line{
+  display:flex;
+  align-items:flex-start;
+  gap:6px;
+  font-size:11.5px;
+  font-weight:500;
+  color:var(--route-strong);
+  background:var(--route-soft);
+  border-radius:var(--radius-sm);
+  padding:5px 8px;
+  margin-top:5px;
+}
+.addr-obs-line svg{width:12px; height:12px; flex-shrink:0; margin-top:1.5px;}
 .addr-item .addr-remove{
   border:none; background:none; color:var(--ink-soft);
   cursor:pointer; font-size:14px; padding:0 2px; flex-shrink:0; align-self:flex-start;
@@ -725,7 +739,11 @@ input[type=file]{display:none;}
   font-size:10.5px;
   color:var(--ink-soft);
   margin-top:2px;
+  display:flex;
+  align-items:flex-start;
+  gap:5px;
 }
+.verified-db-coords svg{width:12px; height:12px; flex-shrink:0; margin-top:1.5px; color:var(--ink-faint);}
 
 .empty-state{
   text-align:center;
@@ -998,6 +1016,6 @@ input[type=file]{display:none;}
 
 </div>
 
-<script src="app.js?v=13"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>
