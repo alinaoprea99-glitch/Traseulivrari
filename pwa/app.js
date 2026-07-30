@@ -60,7 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderCouriers();
     renderRouteSummary();
     maybeShowGeocodeButton();
-    document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+    updateExportButtonsState();
     redrawMap();
     fitMapToAll();
   }
@@ -104,7 +104,7 @@ function initCrossTabSync(){
       renderAddresses();
       renderRouteSummary();
       maybeShowGeocodeButton();
-      document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+      updateExportButtonsState();
       redrawMap();
     } catch (err){
       console.error('Nu am putut sincroniza starea cu celălalt tab', err);
@@ -1045,6 +1045,7 @@ function importFromExportedExcel(file){
           products: r.products,
           productsKg: r.productsKg,
           clientName: [r.firstName, r.lastName].filter(Boolean).join(' '),
+          firstName: r.firstName,
           phone: r.phone,
           amount: r.amount,
           paymentMethod: r.paymentMethod,
@@ -1221,6 +1222,7 @@ function showColumnMapper(rows){
         raw: fullAddress,
         details,
         clientName,
+        firstName,
         phone: getCell(row, 'phone'),
         amount: colMap.amount !== null ? parseAmount(row[colMap.amount]) : null,
         paymentMethod: colMap.paymentMethod !== null ? normalizePaymentMethod(row[colMap.paymentMethod]) : '',
@@ -1265,6 +1267,8 @@ function addAddress(data){
     raw: data.raw,
     details: data.details || '',
     clientName: data.clientName || '',
+    firstName: data.firstName || '', // as typed in the order's own "First Name" field, kept separate from clientName since customers don't always split first/last name correctly
+    greetingNameOverride: data.greetingNameOverride || '', // manual correction from the "verifică mesajele" review step, wins over any auto-detected greeting name
     phone: data.phone || '',
     amount: data.amount ?? null,
     paymentMethod: data.paymentMethod || '',
@@ -1850,7 +1854,7 @@ async function runAutoAssignAndRoute(){
   renderRouteSummary();
   redrawMap();
   updateMapTopBar();
-  document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+  updateExportButtonsState();
   pushHistorySnapshot();
   showToast('Trasee generate.');
   switchToTab('panel-trasee');
@@ -1910,7 +1914,7 @@ function restoreHistorySnapshot(index){
   renderAddresses();
   renderRouteSummary();
   maybeShowGeocodeButton();
-  document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+  updateExportButtonsState();
   redrawMap();
   fitMapToAll();
   showToast('Traseu restaurat din istoric.');
@@ -2791,7 +2795,7 @@ async function cancelStop(addrId){
   renderRouteSummary();
   redrawMap();
   updateMapTopBar();
-  document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+  updateExportButtonsState();
   showToast(`Comandă anulată${route ? ' — traseul rămas a fost actualizat, fără reordonare' : ''}.`);
 }
 
@@ -3652,7 +3656,7 @@ function loadStateFromFile(file){
       renderAddresses();
       renderRouteSummary();
       maybeShowGeocodeButton();
-      document.getElementById('exportBtn').disabled = Object.keys(state.routes).length === 0;
+      updateExportButtonsState();
       redrawMap();
       fitMapToAll();
       showToast(`Stare încărcată${data.savedAt ? ' (salvată ' + new Date(data.savedAt).toLocaleString('ro-RO') + ')' : ''}.`);
@@ -3691,7 +3695,7 @@ function initActionBar(){
     renderAddresses();
     renderRouteSummary();
     redrawMap();
-    document.getElementById('exportBtn').disabled = true;
+    updateExportButtonsState();
     document.getElementById('geocodeSection').style.display = 'none';
     map.setView([45.9432, 24.9668], 7);
     switchToTab('panel-curieri');
@@ -3709,7 +3713,7 @@ function initActionBar(){
     renderAddresses();
     renderRouteSummary();
     redrawMap();
-    document.getElementById('exportBtn').disabled = true;
+    updateExportButtonsState();
     showToast('Curierii au fost resetați.');
   });
 
@@ -3727,7 +3731,7 @@ function initActionBar(){
     renderCouriers();
     renderRouteSummary();
     redrawMap();
-    document.getElementById('exportBtn').disabled = true;
+    updateExportButtonsState();
     document.getElementById('geocodeSection').style.display = 'none';
     showToast('Adresele au fost resetate.');
   });
@@ -3746,11 +3750,18 @@ function initActionBar(){
     renderCouriers();
     renderRouteSummary();
     redrawMap();
-    document.getElementById('exportBtn').disabled = true;
+    updateExportButtonsState();
     showToast('Traseele au fost resetate.');
   });
 
   document.getElementById('exportBtn').addEventListener('click', exportRoutesXlsx);
+  document.getElementById('generateMessagesBtn').addEventListener('click', showGenerateMessagesModal);
+}
+
+function updateExportButtonsState(){
+  const hasRoutes = Object.keys(state.routes).length > 0;
+  document.getElementById('exportBtn').disabled = !hasRoutes;
+  document.getElementById('generateMessagesBtn').disabled = !hasRoutes;
 }
 
 function splitClientName(fullName){
@@ -3759,6 +3770,142 @@ function splitClientName(fullName){
   if (parts.length === 1) return { firstName: parts[0], lastName: '' };
   // last word = last name, everything before = first name (handles compound first names like "Constantin Dan")
   return { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
+}
+
+function toTitleCase(word){
+  if (!word) return '';
+  return word.charAt(0).toLocaleUpperCase('ro-RO') + word.slice(1).toLocaleLowerCase('ro-RO');
+}
+
+/**
+ * Best-effort given name for a personalized greeting ("Bună Mariana,"). Customers don't always
+ * split first/last name correctly at checkout (full name crammed into one field, all caps, etc.),
+ * so this is a guess, not a guarantee — that's why showGenerateMessagesModal() always lets the
+ * dispatcher review and correct it before anything is actually sent.
+ */
+function getGreetingFirstName(addr){
+  if (addr.greetingNameOverride) return addr.greetingNameOverride;
+  const source = addr.firstName || splitClientName(addr.clientName).firstName;
+  const firstWord = String(source || '').trim().split(/\s+/)[0] || '';
+  return toTitleCase(firstWord);
+}
+
+/** Romanian mobile numbers are usually typed as 07xxxxxxxx — Messages.app on Mac matches phone-number
+ *  buddies most reliably in full international format, so normalize to +40 when the shape is recognizable. */
+function normalizePhoneForMessages(phone){
+  const digits = String(phone || '').replace(/[\s()-]/g, '');
+  if (digits.startsWith('+')) return digits;
+  if (/^0\d{9}$/.test(digits)) return `+40${digits.slice(1)}`;
+  return digits;
+}
+
+function formatWindowForMessage(win){
+  if (!win) return '';
+  return `${win.windowStart.replace(':', '.')} - ${win.windowEnd.replace(':', '.')}`;
+}
+
+function buildDeliveryMessage(name, dayPhrase, windowText){
+  const greeting = name ? `Buna ${name},` : 'Buna,';
+  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
+}
+
+/** All non-cancelled stops that are part of a generated route and have a computed delivery window. */
+function getMessageableStops(){
+  const stops = [];
+  state.couriers.forEach(c => {
+    const route = state.routes[c.id];
+    if (!route) return;
+    route.order.forEach(addrId => {
+      const addr = state.addresses.find(a => a.id === addrId);
+      if (!addr || addr.cancelled) return;
+      const win = route.windows ? route.windows[addr.id] : null;
+      if (!win || !addr.phone) return;
+      stops.push({ addr, win });
+    });
+  });
+  return stops;
+}
+
+function showGenerateMessagesModal(){
+  const stops = getMessageableStops();
+  if (!stops.length){
+    showToast('Niciun client cu telefon și interval de livrare calculat — generează întâi traseele.', true);
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box" style="max-width:540px;">
+      <div class="modal-title">Mesaje pentru clienți</div>
+      <div class="hint" style="margin-bottom:10px;">Verifică prenumele detectat pentru fiecare client — clienții nu completează mereu corect câmpurile de nume la comandă. Corectează direct în casetă dacă e greșit, apoi descarcă fișierul pentru trimitere automată prin Messages.</div>
+      <div class="field" style="margin-bottom:10px; max-width:160px;">
+        <label>Ziua livrării</label>
+        <input type="text" id="gmDayPhrase" value="mâine">
+      </div>
+      <div id="gmRows" style="max-height:42vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;"></div>
+      <div style="display:flex; gap:6px; margin-top:14px;">
+        <button class="btn btn-ghost btn-sm" id="gmCancelBtn" style="flex:1;">Anulează</button>
+        <button class="btn btn-primary btn-sm" id="gmDownloadBtn" style="flex:1;">Descarcă fișierul (${stops.length})</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const rowsEl = overlay.querySelector('#gmRows');
+  const dayInput = overlay.querySelector('#gmDayPhrase');
+
+  function renderRow(stop){
+    const { addr, win } = stop;
+    const windowText = formatWindowForMessage(win);
+    const row = document.createElement('div');
+    row.className = 'gm-row';
+    row.innerHTML = `
+      <div class="gm-row-top">
+        <input type="text" class="gm-name-input" data-id="${addr.id}" value="${escapeHtml(getGreetingFirstName(addr))}" placeholder="prenume">
+        <span class="gm-phone">${escapeHtml(addr.phone)}</span>
+      </div>
+      <div class="gm-window">${ICONS.clock}${escapeHtml(windowText)}</div>
+      <div class="gm-preview" id="gmPreview-${addr.id}"></div>
+    `;
+    const preview = row.querySelector('.gm-preview');
+    const updatePreview = () => {
+      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText);
+    };
+    row.querySelector('.gm-name-input').addEventListener('input', (e) => {
+      addr.greetingNameOverride = e.target.value.trim();
+      updatePreview();
+    });
+    updatePreview();
+    rowsEl.appendChild(row);
+    return updatePreview;
+  }
+
+  const updaters = stops.map(renderRow);
+  dayInput.addEventListener('input', () => updaters.forEach(fn => fn()));
+
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('#gmCancelBtn').addEventListener('click', close);
+  overlay.querySelector('#gmDownloadBtn').addEventListener('click', () => {
+    saveAddressesToStorage(); // persist any greeting-name corrections made in this review pass
+    const dayPhrase = dayInput.value.trim();
+    const payload = stops.map(({ addr, win }) => ({
+      phone: normalizePhoneForMessages(addr.phone),
+      message: buildDeliveryMessage(getGreetingFirstName(addr), dayPhrase, formatWindowForMessage(win))
+    }));
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mesaje_clienti_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    close();
+    showToast(`Fișier cu ${payload.length} mesaje descărcat.`);
+  });
 }
 
 function exportRoutesXlsx(){
