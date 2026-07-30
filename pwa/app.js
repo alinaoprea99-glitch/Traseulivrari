@@ -3861,6 +3861,7 @@ function showGenerateMessagesModal(){
     const row = document.createElement('div');
     row.className = 'gm-row';
     row.innerHTML = `
+      <div class="gm-fullname">${escapeHtml(addr.clientName || addr.raw)}</div>
       <div class="gm-row-top">
         <input type="text" class="gm-name-input" data-id="${addr.id}" value="${escapeHtml(getGreetingFirstName(addr))}" placeholder="prenume">
         <span class="gm-phone">${escapeHtml(addr.phone)}</span>
