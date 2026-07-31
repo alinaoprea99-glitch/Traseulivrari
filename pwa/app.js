@@ -1002,6 +1002,7 @@ function parseExportedExcelRows(rows){
     entry.firstName = String(entry.firstName || '').trim();
     entry.lastName = String(entry.lastName || '').trim();
     entry.phone = String(entry.phone || '').trim();
+    if (/^7\d{8}$/.test(entry.phone)) entry.phone = `0${entry.phone}`; // Excel dropped the leading 0 (see getPhoneCell above)
     entry.raw = String(entry.raw || '').trim();
     entry.details = String(entry.details || '').trim();
     entry.products = String(entry.products || '').trim();
@@ -1182,6 +1183,15 @@ function showColumnMapper(rows){
 
     const getCell = (row, key) => colMap[key] !== null ? String(row[colMap[key]] ?? '').trim() : '';
 
+    // When the phone column in the source file is a real Excel number (not text), SheetJS
+    // returns it without a leading 0 (0722598835 -> 722598835). A bare 9-digit number starting
+    // with 7 is unambiguously a Romanian mobile that lost its 0, so restore it here, at the
+    // point of entry, rather than leaving every downstream use (calling, display, messages) broken.
+    const getPhoneCell = (row) => {
+      const raw = getCell(row, 'phone');
+      return /^7\d{8}$/.test(raw) ? `0${raw}` : raw;
+    };
+
     // Some order exports (WooCommerce among them) put one product per row: only the FIRST
     // row of a multi-product order carries the address/customer columns, and every extra
     // product for that same order appears on its own row afterward with those columns left
@@ -1223,7 +1233,7 @@ function showColumnMapper(rows){
         details,
         clientName,
         firstName,
-        phone: getCell(row, 'phone'),
+        phone: getPhoneCell(row),
         amount: colMap.amount !== null ? parseAmount(row[colMap.amount]) : null,
         paymentMethod: colMap.paymentMethod !== null ? normalizePaymentMethod(row[colMap.paymentMethod]) : '',
         products: productEntry,
@@ -3791,11 +3801,17 @@ function getGreetingFirstName(addr){
 }
 
 /** Romanian mobile numbers are usually typed as 07xxxxxxxx — Messages.app on Mac matches phone-number
- *  buddies most reliably in full international format, so normalize to +40 when the shape is recognizable. */
+ *  buddies most reliably in full international format, so normalize to +40 when the shape is recognizable.
+ *  Also covers numbers imported from Excel where the phone cell was stored as a number rather than text:
+ *  SheetJS then drops the leading 0 (0722598835 -> 722598835), so a bare 9-digit number starting with 7
+ *  is treated the same as if the 0 were still there. */
 function normalizePhoneForMessages(phone){
-  const digits = String(phone || '').replace(/[\s()-]/g, '');
+  const digits = String(phone || '').replace(/[\s().-]/g, '');
   if (digits.startsWith('+')) return digits;
   if (/^0\d{9}$/.test(digits)) return `+40${digits.slice(1)}`;
+  if (/^7\d{8}$/.test(digits)) return `+40${digits}`;
+  if (/^40\d{9}$/.test(digits)) return `+${digits}`;
+  if (/^0040\d{9}$/.test(digits)) return `+40${digits.slice(4)}`;
   return digits;
 }
 
