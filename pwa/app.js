@@ -3572,7 +3572,7 @@ function redrawMap(){
         const isLowConfidence = !addr.manuallyAdjusted && addr.confidence && addr.confidence !== 'high' && addr.confidence !== 'verified';
         const ringColor = isLowConfidence ? 'var(--danger)' : '#fff';
         const ringWidth = isLowConfidence ? 3 : 2;
-        const fillColor = addr.deliveryStatus === 'delivered' ? 'var(--depot)'
+        const fillColor = addr.deliveryStatus === 'delivered' ? 'var(--delivered)'
           : addr.deliveryStatus === 'failed' ? 'var(--danger)'
           : c.color;
         const icon = L.divIcon({
@@ -3593,7 +3593,7 @@ function redrawMap(){
       if (route.geometry){
         const legs = splitGeometryByStops(route.geometry.coordinates, stopsInOrder.map(a => ({ lat: a.lat, lng: a.lng })));
         legs.forEach((leg, i) => {
-          const legColor = stopsInOrder[i].deliveryStatus === 'delivered' ? 'var(--depot)'
+          const legColor = stopsInOrder[i].deliveryStatus === 'delivered' ? 'var(--delivered)'
             : stopsInOrder[i].deliveryStatus === 'failed' ? 'var(--danger)'
             : c.color;
           const latlngs = leg.map(([lng,lat]) => [lat,lng]);
@@ -3604,7 +3604,7 @@ function redrawMap(){
         const end = c.sameAsStart || c.end.status !== 'ok' ? c.start : c.end;
         let prev = c.start;
         stopsInOrder.forEach(addr => {
-          const legColor = addr.deliveryStatus === 'delivered' ? 'var(--depot)'
+          const legColor = addr.deliveryStatus === 'delivered' ? 'var(--delivered)'
             : addr.deliveryStatus === 'failed' ? 'var(--danger)'
             : c.color;
           L.polyline([[prev.lat, prev.lng], [addr.lat, addr.lng]], { color: legColor, weight: 3, opacity: 0.6, dashArray: '6,6' }).addTo(routeLinesLayer);

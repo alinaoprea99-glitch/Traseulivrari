@@ -35,6 +35,8 @@
   --route-ring:rgba(255,90,31,0.20);
   --depot:#2D6A4F;
   --depot-soft:#DCEEE3;
+  --delivered:#16A34A;
+  --delivered-soft:#DCFCE3;
   --c2:#8B5CF6;
   --c2-soft:#EDE7FE;
   --c3:#1D7FBF;
@@ -69,6 +71,8 @@
     --route-ring:rgba(255,122,71,0.26);
     --depot:#56C596;
     --depot-soft:#16302489;
+    --delivered:#22C55E;
+    --delivered-soft:#14532D89;
     --c2:#A78BFA;
     --c2-soft:#2E2547;
     --c3:#5AAAE0;
@@ -416,10 +420,10 @@ input[type=file]{display:none;}
 .addr-item:hover{border-color:var(--ink-soft); box-shadow:var(--shadow-2); transform:translateY(-1px);}
 .addr-item.addr-cancelled{background:var(--line-soft); opacity:0.7;}
 .addr-item.addr-cancelled .addr-main{text-decoration:line-through;}
-.addr-item.addr-delivered{border-color:var(--depot); background:var(--depot-soft);}
+.addr-item.addr-delivered{border-color:var(--delivered); background:var(--delivered-soft);}
 .addr-item.addr-delivery-failed{border-color:var(--danger); background:var(--danger-soft);}
 .delivery-badge{font-size:10.5px; font-weight:700; padding:2px 7px; border-radius:var(--radius-pill); display:inline-block; margin-bottom:4px;}
-.delivery-badge.delivered{color:var(--depot); background:var(--white);}
+.delivery-badge.delivered{color:var(--delivered); background:var(--white);}
 .delivery-badge.failed{color:var(--danger); background:var(--white);}
 
 /* ---- route stop item (Trasee tab) ---- */
@@ -442,7 +446,7 @@ input[type=file]{display:none;}
   border-color:var(--route);
   background:var(--route-soft);
 }
-.route-stop-item.addr-delivered{border-color:var(--depot); background:var(--depot-soft);}
+.route-stop-item.addr-delivered{border-color:var(--delivered); background:var(--delivered-soft);}
 .route-stop-item.addr-delivery-failed{border-color:var(--danger); background:var(--danger-soft);}
 .rs-drag-handle{
   cursor:grab;

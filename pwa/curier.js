@@ -189,9 +189,9 @@ let meMarker = null;
 let watchId = null;
 let lastKnownPos = null;
 let routeLineFetchedFor = null; // routeId this run's line was fetched for, to avoid refetching on every toggle
-let routeLineCoords = null; // cached OSRM geometry ([lng,lat] pairs) for the current route, redrawn (not refetched) on every status change
+let routeLineLegs = null; // cached per-leg OSRM geometry ([[lng,lat],...] per leg) for the current route, redrawn (not refetched) on every status change
 
-const STATUS_COLORS = { pending: '#5B6B6D', delivered: '#2D6A4F', failed: '#C23B22' };
+const STATUS_COLORS = { pending: '#5B6B6D', delivered: '#16A34A', failed: '#C23B22' };
 
 function initCourierMapIfNeeded(){
   if (courierMap) return;
@@ -244,11 +244,15 @@ async function fetchAndDrawRouteLine(){
     if (pts.length < 2) return;
     routeLineFetchedFor = payload.routeId;
     try {
-      const url = `https://router.project-osrm.org/route/v1/driving/${pts.join(';')}?overview=full&geometries=geojson`;
+      // steps=true makes OSRM hand back geometry already split per leg (one leg per
+      // consecutive stop pair) — used to color each leg by its destination stop's delivery
+      // status. This is authoritative (OSRM's own routing decides where each leg starts/ends),
+      // unlike guessing the split by nearest-point matching against a single merged line.
+      const url = `https://router.project-osrm.org/route/v1/driving/${pts.join(';')}?overview=full&geometries=geojson&steps=true`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.code === 'Ok' && data.routes && data.routes.length){
-        routeLineCoords = data.routes[0].geometry.coordinates; // [lng,lat] pairs, OSRM's raw order
+        routeLineLegs = data.routes[0].legs.map(leg => leg.steps.flatMap(step => step.geometry.coordinates));
       }
     } catch (e){
       console.error('Nu am putut desena linia traseului pe hartă', e);
@@ -257,40 +261,16 @@ async function fetchAndDrawRouteLine(){
   drawColoredRouteLine();
 }
 
-/**
- * Splits the fetched route geometry into one polyline leg per stop — from the previous
- * stop's matched point up to this stop's — so each leg can be colored by that stop's
- * delivery status. This is what makes the route visually "green up" as deliveries happen,
- * instead of staying one flat color for the whole day. Each stop's own [lat,lng] is matched
- * to its NEAREST point along the geometry, searched only forward from the previous stop's
- * match — stops are visited in order, so this keeps a road that loops back near an earlier
- * point from confusing the split.
- */
-function splitGeometryByStops(coordinates, stopLatLngs){
-  const legs = [];
-  let searchStart = 0;
-  let legStart = 0;
-  stopLatLngs.forEach((stop) => {
-    let bestIdx = searchStart, bestDist = Infinity;
-    for (let i = searchStart; i < coordinates.length; i++){
-      const [lng, lat] = coordinates[i];
-      const d = (lat - stop.lat) ** 2 + (lng - stop.lng) ** 2;
-      if (d < bestDist){ bestDist = d; bestIdx = i; }
-    }
-    legs.push(coordinates.slice(legStart, bestIdx + 1));
-    legStart = bestIdx;
-    searchStart = bestIdx;
-  });
-  return legs;
-}
-
 function drawColoredRouteLine(){
-  if (!routeLineLayer || !routeLineCoords || !payload) return;
+  if (!routeLineLayer || !routeLineLegs || !payload) return;
   routeLineLayer.clearLayers();
+  // legs[i] runs FROM stop i TO stop i+1 (payload.stops is stop-to-stop only, no starting
+  // depot in this geometry) — colored by the stop it's heading TO.
   const stopsWithCoords = payload.stops.filter(s => s.lat != null).sort((a, b) => a.o - b.o);
-  const legs = splitGeometryByStops(routeLineCoords, stopsWithCoords.map(s => ({ lat: s.lat, lng: s.lng })));
-  legs.forEach((leg, i) => {
-    const status = statuses[stopsWithCoords[i].id] || 'pending';
+  routeLineLegs.forEach((leg, i) => {
+    const destStop = stopsWithCoords[i + 1];
+    if (!destStop) return;
+    const status = statuses[destStop.id] || 'pending';
     const latlngs = leg.map(([lng, lat]) => [lat, lng]);
     L.polyline(latlngs, { color: STATUS_COLORS[status], weight: 4, opacity: 0.8 }).addTo(routeLineLayer);
   });
