@@ -296,27 +296,6 @@ body.view-map .content{ display:none; }
   font-variant-numeric:tabular-nums;
 }
 
-.eta-banner{
-  /* bottom, not top — Leaflet's real zoom control sits top-left, so this can never collide */
-  position:absolute; left:12px; right:12px; bottom:12px; z-index:500;
-  background:color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-  border-radius:var(--radius-md);
-  padding:11px 14px;
-  box-shadow:var(--shadow-2);
-}
-.eta-banner .eta-title{ font-weight:700; font-size:13.5px; }
-.eta-banner .eta-detail{ font-size:12px; color:var(--ink-soft); margin-top:2px; font-variant-numeric:tabular-nums; }
-.locate-hint{
-  position:absolute; left:12px; right:12px; bottom:12px; z-index:500;
-  background:color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-  border-radius:var(--radius-md);
-  padding:10px 14px;
-  font-size:12px; color:var(--ink-soft); text-align:center;
-  box-shadow:var(--shadow-2);
-}
-
 .empty-state{ text-align:center; padding:70px 24px; }
 .empty-state .es-icon svg{ width:36px; height:36px; color:var(--ink-faint); }
 .empty-state .es-title{ font-weight:700; font-size:16px; margin-top:12px; }
@@ -326,21 +305,18 @@ body.view-map .content{ display:none; }
 
 /* leaflet popup — its own light chrome regardless of app theme (small, short-lived, map-native) */
 .stop-popup{ font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif; color:#1A2B2E; }
-.popup-eta-btn{
-  border:1px solid #E4DFD3; background:#FBF9F5; color:#1A2B2E;
-  border-radius:999px; padding:7px 12px; font-size:12px; font-weight:650; cursor:pointer;
-  display:inline-flex; align-items:center; gap:5px; font-family:inherit;
+.popup-eta{
+  font-size:12px; color:#5B6B6D; font-variant-numeric:tabular-nums;
+  display:flex; align-items:center; gap:5px;
 }
-.popup-eta-btn svg{ width:13px; height:13px; }
+.popup-eta svg{ width:13px; height:13px; flex-shrink:0; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <div id="mapWrap">
   <div id="courierMap"></div>
-  <div class="eta-banner" id="etaBanner" style="display:none;"></div>
-  <div class="locate-hint" id="locateHint" style="display:none;">Ating o oprire pe hartă ca să vezi timpul estimat până acolo.</div>
 </div>
-<script src="curier.js?v=8"></script>
+<script src="curier.js?v=9"></script>
 </body>
 </html>

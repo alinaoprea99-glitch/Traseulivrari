@@ -243,13 +243,10 @@ function updateMapMarkers(){
         <div style="font-weight:700; margin-bottom:2px;">${escapeHtml(s.name || s.addr)}</div>
         <div style="font-size:12px; color:#5B6B6D; margin-bottom:6px;">${escapeHtml(s.addr)}</div>
         ${s.products ? `<div style="font-size:12px; color:#5B6B6D; margin-bottom:6px; display:flex; gap:4px; align-items:flex-start;"><span style="width:12px; flex-shrink:0;">${ICONS.apple}</span>${formatProductsWithKg(s)}</div>` : ''}
-        <button class="popup-eta-btn" data-eta-for="${s.id}">${ICONS.clock} Cât mai am până aici?</button>
+        <div class="popup-eta">${ICONS.clock} Se calculează…</div>
       </div>
     `);
-    marker.on('popupopen', (e) => {
-      const btn = e.popup.getElement().querySelector('[data-eta-for]');
-      if (btn) btn.addEventListener('click', () => showEtaForStop(s));
-    });
+    marker.on('popupopen', () => updatePopupEta(s, marker));
     bounds.push([s.lat, s.lng]);
   });
   if (bounds.length) courierMap.fitBounds(bounds, { padding: [30, 30] });
@@ -315,6 +312,10 @@ function startLocationWatch(){
     (pos) => {
       lastKnownPos = pos.coords;
 
+      if (pendingEtaRetry && pendingEtaRetry.marker.isPopupOpen()){
+        updatePopupEta(pendingEtaRetry.stop, pendingEtaRetry.marker);
+      }
+
       const now = Date.now();
       recentFixes.push({ lat: pos.coords.latitude, lng: pos.coords.longitude, t: now });
       recentFixes = recentFixes.filter(f => now - f.t <= RECENT_FIXES_WINDOW_MS);
@@ -350,27 +351,33 @@ const STOP_HANDOFF_BUFFER_MIN = 10; // same handoff/buffer assumption as the dis
  * 4-9 first if a customer at stop 10 asks "how long until you get here"; a direct
  * route from the courier's live position to stop 10 alone would badly underestimate it.
  */
-async function showEtaForStop(stop){
-  const banner = document.getElementById('etaBanner');
-  const hint = document.getElementById('locateHint');
+// A popup still waiting on a GPS fix gets one automatic retry as soon as a position
+// arrives (see startLocationWatch) — there's no button left to tap to retry manually.
+let pendingEtaRetry = null;
+
+async function updatePopupEta(stop, marker){
+  const popup = marker.getPopup();
+  const setEta = (html) => {
+    const el = popup.getElement() && popup.getElement().querySelector('.popup-eta');
+    if (!el) return;
+    el.innerHTML = html;
+    popup.update();
+  };
+
   if (!lastKnownPos){
-    banner.style.display = 'none';
-    hint.style.display = 'block';
-    hint.textContent = 'Îți aștept poziția GPS — permite accesul la locație și încearcă din nou în câteva secunde.';
+    pendingEtaRetry = { stop, marker };
+    setEta(`${ICONS.clock} Îți aștept poziția GPS — apare automat imediat ce e disponibilă.`);
     return;
   }
+  pendingEtaRetry = null;
 
   const stopStatus = statuses[stop.id] || 'pending';
-  hint.style.display = 'none';
-  banner.style.display = 'block';
-
   if (stopStatus !== 'pending'){
-    const label = stopStatus === 'delivered' ? '✓ deja marcată livrată' : '✕ deja marcată nelivrată';
-    banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">${label}</div>`;
+    setEta(stopStatus === 'delivered' ? '✓ deja marcată livrată' : '✕ deja marcată nelivrată');
     return;
   }
 
-  banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Se calculează…</div>`;
+  setEta(`${ICONS.clock} Se calculează…`);
 
   const remaining = payload.stops
     .filter(s => s.o <= stop.o && (statuses[s.id] || 'pending') === 'pending' && s.lat != null)
@@ -408,13 +415,13 @@ async function showEtaForStop(stop){
       const arrival = new Date(Date.now() + totalMin * 60000);
       const arrivalStr = `${arrival.getHours().toString().padStart(2, '0')}:${arrival.getMinutes().toString().padStart(2, '0')}`;
       const viaText = stopsBefore > 0 ? ` · via ${stopsBefore} ${stopsBefore === 1 ? 'oprire rămasă' : 'opriri rămase'}` : '';
-      banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">⏱ ~${totalMin} min (sosire ~${arrivalStr}) · ${km} km${viaText}${trafficNote}</div>`;
+      setEta(`⏱ ~${totalMin} min (sosire ~${arrivalStr}) · ${km} km${viaText}${trafficNote}`);
     } else {
-      banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Nu am putut calcula timpul — încearcă din nou.</div>`;
+      setEta('Nu am putut calcula timpul — închide și redeschide oprirea ca să reîncerci.');
     }
   } catch (e){
     console.error('Nu am putut calcula ETA', e);
-    banner.innerHTML = `<div class="eta-title">${escapeHtml(stop.name || stop.addr)}</div><div class="eta-detail">Nu am putut calcula timpul — verifică conexiunea.</div>`;
+    setEta('Nu am putut calcula timpul — verifică conexiunea.');
   }
 }
 
