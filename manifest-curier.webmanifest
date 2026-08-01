@@ -1,8 +1,8 @@
 {
-  "name": "Crăița Merelor Delivery",
-  "short_name": "Crăița",
-  "description": "Planificator trasee curieri — repartizare, optimizare rută și livrare.",
-  "start_url": "./index.html",
+  "name": "Crăița Merelor — Curier",
+  "short_name": "Crăița Curier",
+  "description": "Traseul de livrare al curierului, pentru ziua curentă.",
+  "start_url": "./curier.html",
   "scope": "./",
   "display": "standalone",
   "background_color": "#F7F5F0",

@@ -77,8 +77,17 @@ function updateStopField(stopId, fields){
     .catch(e => console.error('Nu am putut sincroniza cu dispecerul', e));
 }
 
+const LAST_RUN_STORAGE_KEY = 'curier-last-run';
+
 function initCourierRun(){
   currentRunId = new URLSearchParams(location.search).get('run');
+  if (!currentRunId){
+    // Opened with no ?run= — most likely relaunched from the installed home-screen icon,
+    // whose manifest start_url can't carry a per-day query param. Fall back to whichever
+    // run was last successfully opened via a real link, so one install keeps working day
+    // after day without having to dig the WhatsApp link back out each morning.
+    try { currentRunId = localStorage.getItem(LAST_RUN_STORAGE_KEY); } catch (e){}
+  }
   if (!currentRunId){
     loadingRun = false;
     payload = null;
@@ -100,6 +109,7 @@ function initCourierRun(){
             render();
             return;
           }
+          try { localStorage.setItem(LAST_RUN_STORAGE_KEY, currentRunId); } catch (e){}
           applyRunSnapshot(currentRunId, doc.data());
         },
         (err) => {
