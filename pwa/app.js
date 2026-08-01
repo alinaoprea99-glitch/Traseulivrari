@@ -2606,6 +2606,26 @@ function optimizeOrderMultiStart(matrix, numPoints){
   return bestOrder;
 }
 
+/**
+ * Turns OSRM's own per-leg breakdown (requires &steps=true on the request) into a map from
+ * stop id -> that stop's incoming leg geometry ([{lng,lat},...], from wherever the courier
+ * was before to this stop). Authoritative — OSRM decides where each leg starts/ends, so
+ * there's no need to guess a split point along a single merged line (which is fragile: a
+ * stop's nearest point on the full route isn't always where the courier actually turns off
+ * to reach it). Legs beyond orderedIds.length (the final stop -> end depot) are dropped —
+ * that leg isn't tied to any one customer, so it's not needed for delivery-status coloring.
+ * Stored as an object keyed by stop id (not an array of arrays) because Firestore rejects
+ * arrays directly containing arrays — see routesForFirestore/routesFromFirestore.
+ */
+function buildLegGeometries(routeData, orderedIds){
+  const legs = {};
+  routeData.routes[0].legs.forEach((leg, i) => {
+    if (i >= orderedIds.length) return;
+    legs[orderedIds[i]] = leg.steps.flatMap(step => step.geometry.coordinates.map(([lng, lat]) => ({ lng, lat })));
+  });
+  return legs;
+}
+
 async function computeOptimizedRoute(courier, stops){
   const end = courier.sameAsStart || courier.end.status !== 'ok' ? courier.start : courier.end;
   const points = [courier.start, ...stops.map(s => ({lat:s.lat,lng:s.lng})), end];
@@ -2635,13 +2655,14 @@ async function computeOptimizedRoute(courier, stops){
     //    through the given points in the given order, it does not reorder them.
     const orderedPoints = optimizedOrder.map(idx => points[idx]);
     const routeCoordStr = orderedPoints.map(p => `${p.lng},${p.lat}`).join(';');
-    let geometry = null, totalKm = null;
+    let geometry = null, legGeometries = null, totalKm = null;
     try {
-      const routeUrl = `https://router.project-osrm.org/route/v1/driving/${routeCoordStr}?overview=full&geometries=geojson`;
+      const routeUrl = `https://router.project-osrm.org/route/v1/driving/${routeCoordStr}?overview=full&geometries=geojson&steps=true`;
       const routeRes = await fetch(routeUrl);
       const routeData = await routeRes.json();
       if (routeData.code === 'Ok' && routeData.routes && routeData.routes.length){
         geometry = routeData.routes[0].geometry;
+        legGeometries = buildLegGeometries(routeData, orderedIds);
         totalKm = routeData.routes[0].distance / 1000;
       }
     } catch (e){
@@ -2659,6 +2680,7 @@ async function computeOptimizedRoute(courier, stops){
       totalKm,
       totalMin,
       geometry,
+      legGeometries,
       legDurationsMin
     };
     computeDeliveryWindows(courier, state.routes[courier.id]);
@@ -2690,13 +2712,14 @@ async function recomputeRouteFixedOrder(courier, route){
     const totalMin = legDurationsMin.reduce((s, m) => s + m, 0);
 
     const routeCoordStr = points.map(p => `${p.lng},${p.lat}`).join(';');
-    let geometry = null, totalKm = null;
+    let geometry = null, legGeometries = null, totalKm = null;
     try {
-      const routeUrl = `https://router.project-osrm.org/route/v1/driving/${routeCoordStr}?overview=full&geometries=geojson`;
+      const routeUrl = `https://router.project-osrm.org/route/v1/driving/${routeCoordStr}?overview=full&geometries=geojson&steps=true`;
       const routeRes = await fetch(routeUrl);
       const routeData = await routeRes.json();
       if (routeData.code === 'Ok' && routeData.routes && routeData.routes.length){
         geometry = routeData.routes[0].geometry;
+        legGeometries = buildLegGeometries(routeData, route.order);
         totalKm = routeData.routes[0].distance / 1000;
       }
     } catch (e){
@@ -2707,6 +2730,7 @@ async function recomputeRouteFixedOrder(courier, route){
     route.totalKm = totalKm;
     route.totalMin = totalMin;
     route.geometry = geometry;
+    route.legGeometries = legGeometries;
     route.legDurationsMin = legDurationsMin;
     computeDeliveryWindows(courier, route);
   } catch (e){
@@ -3106,6 +3130,12 @@ function buildCourierRunStops(route){
       lng: Math.round(a.lng * 1e6) / 1e6,
       winStart: win ? win.windowStart : '',
       observatii: a.observatii || '',
+      // Same geometry the dispatcher's own map draws for this leg (see buildLegGeometries) —
+      // sent along so the courier's map is pixel-identical, not a separately-fetched,
+      // possibly-different OSRM route. null if the route was never fully optimized (straight-line fallback).
+      legGeometry: (route.legGeometries && route.legGeometries[addrId])
+        ? route.legGeometries[addrId].map(p => ({ lng: Math.round(p.lng * 1e6) / 1e6, lat: Math.round(p.lat * 1e6) / 1e6 }))
+        : null,
       status: 'pending',
       checkinLat: null,
       checkinLng: null,
@@ -3411,6 +3441,7 @@ function recalcRouteDistance(courierId){
   route.totalKm = total;
   route.totalMin = total / AVG_SPEED_KMH * 60;
   route.geometry = null; // straight-line fallback until re-optimized
+  route.legGeometries = null;
   route.legDurationsMin = legDurationsMin;
   computeDeliveryWindows(courier, route);
 }
@@ -3507,32 +3538,6 @@ function focusAddressOnMap(addrId){
   }, 350);
 }
 
-/**
- * Splits a route's OSRM geometry into one polyline leg per stop — from the previous stop's
- * matched point up to this stop's — so each leg can be colored by that stop's delivery
- * status (the route visually "greens up" as the courier delivers). Each stop's own
- * [lat,lng] is matched to its NEAREST point along the geometry, searched only forward from
- * the previous stop's match, so a road that loops back near an earlier point doesn't
- * confuse the split.
- */
-function splitGeometryByStops(coordinates, stopLatLngs){
-  const legs = [];
-  let searchStart = 0;
-  let legStart = 0;
-  stopLatLngs.forEach((stop) => {
-    let bestIdx = searchStart, bestDist = Infinity;
-    for (let i = searchStart; i < coordinates.length; i++){
-      const [lng, lat] = coordinates[i];
-      const d = (lat - stop.lat) ** 2 + (lng - stop.lng) ** 2;
-      if (d < bestDist){ bestDist = d; bestIdx = i; }
-    }
-    legs.push(coordinates.slice(legStart, bestIdx + 1));
-    legStart = bestIdx;
-    searchStart = bestIdx;
-  });
-  return legs;
-}
-
 function redrawMap(){
   markersLayer.clearLayers();
   routeLinesLayer.clearLayers();
@@ -3588,17 +3593,24 @@ function redrawMap(){
         allPoints.push([addr.lat, addr.lng]);
       });
 
-      // route line — split into one leg per stop, each colored by that stop's delivery
-      // status, so the route visually "greens up" as the courier delivers along the way
-      if (route.geometry){
-        const legs = splitGeometryByStops(route.geometry.coordinates, stopsInOrder.map(a => ({ lat: a.lat, lng: a.lng })));
-        legs.forEach((leg, i) => {
-          const legColor = stopsInOrder[i].deliveryStatus === 'delivered' ? 'var(--delivered)'
-            : stopsInOrder[i].deliveryStatus === 'failed' ? 'var(--danger)'
+      // route line — one leg per stop (OSRM's own leg breakdown, see buildLegGeometries),
+      // each colored by that stop's delivery status, so the route visually "greens up" as
+      // the courier delivers along the way
+      if (route.legGeometries){
+        stopsInOrder.forEach(addr => {
+          const legCoords = route.legGeometries[addr.id];
+          if (!legCoords) return;
+          const legColor = addr.deliveryStatus === 'delivered' ? 'var(--delivered)'
+            : addr.deliveryStatus === 'failed' ? 'var(--danger)'
             : c.color;
-          const latlngs = leg.map(([lng,lat]) => [lat,lng]);
+          const latlngs = legCoords.map(({ lng, lat }) => [lat, lng]);
           L.polyline(latlngs, { color: legColor, weight: 3.5, opacity: 0.85 }).addTo(routeLinesLayer);
         });
+      } else if (route.geometry){
+        // legGeometries unavailable (e.g. route saved before this feature existed) —
+        // fall back to the single flat-colored line
+        const latlngs = route.geometry.coordinates.map(([lng,lat]) => [lat,lng]);
+        L.polyline(latlngs, { color: c.color, weight: 3.5, opacity: 0.85 }).addTo(routeLinesLayer);
       } else {
         // straight-line fallback
         const end = c.sameAsStart || c.end.status !== 'ok' ? c.start : c.end;

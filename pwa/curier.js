@@ -36,7 +36,8 @@ function stopsMapToArray(stopsMap){
     lng: s.lng,
     winStart: s.winStart || '',
     winEnd: s.winStart ? addMinutesToTime(s.winStart, 120) : '',
-    observatii: s.observatii || ''
+    observatii: s.observatii || '',
+    legGeometry: s.legGeometry || null
   }));
 }
 
@@ -179,17 +180,16 @@ let noteSaveTimers = {};
 let currentView = 'list';
 let loadingRun = true; // true until the first Firestore snapshot (or an error) arrives — distinguishes "still loading" from "genuinely invalid link" in render()
 
-// ---- Map view: numbered stop markers, the courier's own live position, and a
-// tap-to-see "how long from here" ETA — all computed live via OSRM, no route geometry
-// is ever embedded in the link itself (keeps it short; see app.js buildCourierPayload).
+// ---- Map view: numbered stop markers, the courier's own live position, a tap-to-see
+// "how long from here" ETA (computed live via OSRM), and the route line — using the exact
+// per-leg geometry the dispatcher already computed (payload.stops[i].legGeometry, sent via
+// courierRuns; see app.js buildLegGeometries/buildCourierRunStops), not a second OSRM call.
 let courierMap = null;
 let markersLayer = null;
 let routeLineLayer = null;
 let meMarker = null;
 let watchId = null;
 let lastKnownPos = null;
-let routeLineFetchedFor = null; // routeId this run's line was fetched for, to avoid refetching on every toggle
-let routeLineLegs = null; // cached per-leg OSRM geometry ([[lng,lat],...] per leg) for the current route, redrawn (not refetched) on every status change
 
 const STATUS_COLORS = { pending: '#5B6B6D', delivered: '#16A34A', failed: '#C23B22' };
 
@@ -203,7 +203,7 @@ function initCourierMapIfNeeded(){
   markersLayer = L.layerGroup().addTo(courierMap);
   routeLineLayer = L.layerGroup().addTo(courierMap);
   updateMapMarkers();
-  fetchAndDrawRouteLine();
+  drawColoredRouteLine();
 }
 
 function numberedIcon(number, color){
@@ -237,41 +237,20 @@ function updateMapMarkers(){
   if (bounds.length) courierMap.fitBounds(bounds, { padding: [30, 30] });
 }
 
-async function fetchAndDrawRouteLine(){
-  if (!payload) return;
-  if (routeLineFetchedFor !== payload.routeId){
-    const pts = payload.stops.filter(s => s.lat != null).map(s => `${s.lng},${s.lat}`);
-    if (pts.length < 2) return;
-    routeLineFetchedFor = payload.routeId;
-    try {
-      // steps=true makes OSRM hand back geometry already split per leg (one leg per
-      // consecutive stop pair) — used to color each leg by its destination stop's delivery
-      // status. This is authoritative (OSRM's own routing decides where each leg starts/ends),
-      // unlike guessing the split by nearest-point matching against a single merged line.
-      const url = `https://router.project-osrm.org/route/v1/driving/${pts.join(';')}?overview=full&geometries=geojson&steps=true`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.code === 'Ok' && data.routes && data.routes.length){
-        routeLineLegs = data.routes[0].legs.map(leg => leg.steps.flatMap(step => step.geometry.coordinates));
-      }
-    } catch (e){
-      console.error('Nu am putut desena linia traseului pe hartă', e);
-    }
-  }
-  drawColoredRouteLine();
-}
-
+/**
+ * Draws each stop's incoming leg using the EXACT geometry the dispatcher's own map already
+ * computed (payload.stops[i].legGeometry, sent along in courierRuns — see app.js
+ * buildLegGeometries/buildCourierRunStops), colored by that stop's delivery status. No
+ * separate OSRM call here at all — guarantees the courier sees the identical route the
+ * dispatcher sees, not a second, possibly-different one.
+ */
 function drawColoredRouteLine(){
-  if (!routeLineLayer || !routeLineLegs || !payload) return;
+  if (!routeLineLayer || !payload) return;
   routeLineLayer.clearLayers();
-  // legs[i] runs FROM stop i TO stop i+1 (payload.stops is stop-to-stop only, no starting
-  // depot in this geometry) — colored by the stop it's heading TO.
-  const stopsWithCoords = payload.stops.filter(s => s.lat != null).sort((a, b) => a.o - b.o);
-  routeLineLegs.forEach((leg, i) => {
-    const destStop = stopsWithCoords[i + 1];
-    if (!destStop) return;
-    const status = statuses[destStop.id] || 'pending';
-    const latlngs = leg.map(([lng, lat]) => [lat, lng]);
+  payload.stops.forEach(s => {
+    if (!s.legGeometry) return;
+    const status = statuses[s.id] || 'pending';
+    const latlngs = s.legGeometry.map(({ lng, lat }) => [lat, lng]);
     L.polyline(latlngs, { color: STATUS_COLORS[status], weight: 4, opacity: 0.8 }).addTo(routeLineLayer);
   });
 }
@@ -548,7 +527,7 @@ function render(){
   });
 
   updateMapMarkers(); // no-op if the map hasn't been opened yet — keeps marker colors in sync with status once it has
-  drawColoredRouteLine(); // no-op until the route line has been fetched at least once
+  drawColoredRouteLine(); // no-op if the map hasn't been opened yet — keeps leg colors in sync with status once it has
 }
 
 /** Local in-progress edit (if any) wins over the synced value — keeps the textarea from jumping back mid-typing if an unrelated snapshot arrives before the debounced write in updateStopField has gone out. */
