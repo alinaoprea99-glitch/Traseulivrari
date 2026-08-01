@@ -44,11 +44,19 @@ document.addEventListener('DOMContentLoaded', () => {
   initActionBar();
   setDateStamp();
   initAuthGate();
-  checkForIncomingCheckins();
 });
 
 const db = firebase.firestore();
 let firestoreSyncStarted = false;
+
+/**
+ * True for the duration of a render triggered by adopting a Firestore snapshot (rather than
+ * a genuine local edit). render*() functions check this before their end-of-render
+ * save*ToStorage() call (see below) — without it, adopting our OWN write's echo would
+ * re-save, which re-triggers the same snapshot, forever. A local mutation always renders
+ * with this flag false, so it still gets saved exactly as before.
+ */
+let applyingRemoteSnapshot = false;
 
 /**
  * Gatekeeper before the dispatcher UI is usable: only the authorized dispatcher account
@@ -121,9 +129,14 @@ function initFirestoreSync(){
       state.nextCourierId = data.nextCourierId || (Math.max(...data.couriers.map(c => c.id)) + 1);
     } else if (!couriersLoadedOnce){
       addCourier(); // first-ever login for this project: seed one courier by default
+      saveCouriersToStorage(); // render() below is guarded (no self-save) — this seed needs an explicit save
+    } else {
+      state.couriers = [];
     }
     couriersLoadedOnce = true;
+    applyingRemoteSnapshot = true;
     renderCouriers();
+    applyingRemoteSnapshot = false;
   }, (err) => console.error('Nu am putut sincroniza curierii', err));
 
   let addressesLoadedOnce = false;
@@ -131,9 +144,11 @@ function initFirestoreSync(){
     const data = doc.data();
     state.addresses = (data && Array.isArray(data.addresses)) ? data.addresses : [];
     state.nextAddrId = (data && data.nextAddrId) || (state.addresses.length ? Math.max(...state.addresses.map(a => a.id)) + 1 : 1);
+    applyingRemoteSnapshot = true;
     renderAddresses();
     renderCouriers();
     renderRouteSummary();
+    applyingRemoteSnapshot = false;
     maybeShowGeocodeButton();
     updateExportButtonsState();
     redrawMap();
@@ -142,116 +157,18 @@ function initFirestoreSync(){
   }, (err) => console.error('Nu am putut sincroniza adresele', err));
 
   db.collection('dispatcherData').doc('routes').onSnapshot((doc) => {
-    state.routes = doc.exists ? doc.data() : {};
+    state.routes = doc.exists ? routesFromFirestore(doc.data()) : {};
+    applyingRemoteSnapshot = true;
     renderRouteSummary();
+    applyingRemoteSnapshot = false;
     redrawMap();
+    syncCourierRunListeners();
   }, (err) => console.error('Nu am putut sincroniza traseele', err));
 }
 
-// -------------------------------------------------------------------
-// INCOMING COURIER CHECK-INS — a courier's phone (curier.html) can send GPS positions
-// captured on arrival back here via a link (#checkins=...), symmetric to how routes are
-// sent out to couriers. Opening that link merges the positions into the same verified-
-// address database used during geocoding, so future imports of the same address reuse
-// the courier's confirmed real-world position instead of Nominatim's guess.
-// -------------------------------------------------------------------
-function checkForIncomingCheckins(){
-  const hash = location.hash.slice(1);
-  if (!hash.startsWith('checkins=')) return;
-  const encoded = hash.slice('checkins='.length);
-
-  // clear the hash immediately so refreshing the page doesn't re-trigger the import
-  history.replaceState(null, '', location.pathname + location.search);
-
-  try {
-    const data = JSON.parse(LZString.decompressFromEncodedURIComponent(encoded));
-    const hasCheckins = data && Array.isArray(data.checkins) && data.checkins.length;
-    const hasNotes = data && Array.isArray(data.notes) && data.notes.length;
-    if (!hasCheckins && !hasNotes){
-      showToast('Linkul primit de la curier nu conține nimic nou.', true);
-      return;
-    }
-    showImportCheckinsModal(data);
-  } catch (e){
-    console.error('Nu am putut citi datele din link', e);
-    showToast('Linkul primit de la curier e invalid sau corupt.', true);
-  }
-}
-
-function showImportCheckinsModal(data){
-  const checkins = Array.isArray(data.checkins) ? data.checkins : [];
-  const notes = Array.isArray(data.notes) ? data.notes : [];
-
-  const checkinsSection = checkins.length ? `
-    <div class="hint" style="margin-bottom:6px;">${checkins.length} poziții confirmate de curier direct la livrare — vor înlocui poziția existentă în baza de adrese verificate, dacă exista una.</div>
-    <div style="max-height:30vh; overflow-y:auto; margin-bottom:10px;">
-      ${checkins.map(([addr, lat, lng]) => `
-        <div class="verified-db-row">
-          <div class="verified-db-text">
-            <div class="verified-db-addr">${escapeHtml(addr)}</div>
-            <div class="verified-db-coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
-          </div>
-        </div>
-      `).join('')}
-    </div>` : '';
-
-  const notesSection = notes.length ? `
-    <div class="hint" style="margin-bottom:6px;">${notes.length} ${notes.length === 1 ? 'observație actualizată' : 'observații actualizate'} de curier — vor înlocui observația existentă pentru acele comenzi.</div>
-    <div style="max-height:30vh; overflow-y:auto; margin-bottom:10px;">
-      ${notes.map(([id, text]) => {
-        const addr = state.addresses.find(a => a.id === id);
-        return `
-          <div class="verified-db-row">
-            <div class="verified-db-text">
-              <div class="verified-db-addr">${escapeHtml(addr ? (addr.clientName || addr.raw) : `comandă #${id}`)}</div>
-              <div class="verified-db-coords">${ICONS.tag}${escapeHtml(text)}</div>
-            </div>
-          </div>`;
-      }).join('')}
-    </div>` : '';
-
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal-box" style="max-width:420px;">
-      <div class="modal-title">De la ${escapeHtml(data.courier || 'curier')}${data.date ? ` · ${escapeHtml(data.date)}` : ''}</div>
-      ${checkinsSection}
-      ${notesSection}
-      <div style="display:flex; gap:6px; margin-top:14px;">
-        <button class="btn btn-ghost btn-sm" id="cancelImportBtn" style="flex:1;">Anulează</button>
-        <button class="btn btn-primary btn-sm" id="confirmImportBtn" style="flex:1;">Aplică</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-
-  const close = () => overlay.remove();
-  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-  document.getElementById('cancelImportBtn').addEventListener('click', close);
-  document.getElementById('confirmImportBtn').addEventListener('click', () => {
-    checkins.forEach(([addr, lat, lng]) => saveVerifiedAddress(addr, lat, lng));
-    if (checkins.length) updateVerifiedDbCounter();
-
-    let notesApplied = 0;
-    notes.forEach(([id, text]) => {
-      const addr = state.addresses.find(a => a.id === id);
-      if (!addr) return;
-      addr.observatii = text;
-      notesApplied++;
-    });
-    if (notesApplied){
-      renderAddresses();
-      renderRouteSummary();
-      redrawMap();
-    }
-
-    close();
-    const parts = [];
-    if (checkins.length) parts.push(`${checkins.length} poziții adăugate în baza de adrese verificate`);
-    if (notesApplied) parts.push(`${notesApplied} ${notesApplied === 1 ? 'observație actualizată' : 'observații actualizate'}`);
-    showToast(parts.join(' · ') || 'Nimic de aplicat.');
-  });
-}
+// Incoming courier check-ins/notes/status now arrive live via syncCourierRunListeners/
+// applyCourierRunUpdates (see the SEND TO COURIER section) — no more manual link/WhatsApp
+// round trip to receive them (was: checkForIncomingCheckins + showImportCheckinsModal).
 
 function setDateStamp(){
   const d = new Date();
@@ -339,8 +256,43 @@ function saveAddressesToStorage(){
   }).catch(e => console.error('Could not save addresses', e));
 }
 
+/**
+ * Firestore rejects arrays-of-arrays outright ("Nested arrays are not supported") — and
+ * a route's OSRM geometry is exactly that: GeoJSON coordinates as [[lng,lat], [lng,lat], ...].
+ * Round-trips through {lng,lat} objects (an array of maps, which Firestore is fine with)
+ * just at the storage boundary; every other part of the app keeps using the plain
+ * [lng,lat] tuples GeoJSON/Leaflet expect.
+ */
+function routesForFirestore(routes){
+  const out = {};
+  Object.entries(routes).forEach(([courierId, route]) => {
+    out[courierId] = { ...route };
+    if (route.geometry && Array.isArray(route.geometry.coordinates)){
+      out[courierId].geometry = {
+        ...route.geometry,
+        coordinates: route.geometry.coordinates.map(([lng, lat]) => ({ lng, lat }))
+      };
+    }
+  });
+  return out;
+}
+
+function routesFromFirestore(data){
+  const out = {};
+  Object.entries(data || {}).forEach(([courierId, route]) => {
+    out[courierId] = { ...route };
+    if (route.geometry && Array.isArray(route.geometry.coordinates)){
+      out[courierId].geometry = {
+        ...route.geometry,
+        coordinates: route.geometry.coordinates.map(c => [c.lng, c.lat])
+      };
+    }
+  });
+  return out;
+}
+
 function saveRoutesToStorage(){
-  db.collection('dispatcherData').doc('routes').set(state.routes)
+  db.collection('dispatcherData').doc('routes').set(routesForFirestore(state.routes))
     .catch(e => console.error('Could not save routes', e));
 }
 
@@ -593,7 +545,10 @@ function renderCouriers(){
     });
   });
 
-  saveCouriersToStorage();
+  // Guarded: a render triggered by adopting our own Firestore echo must not save again,
+  // or it loops forever (onSnapshot -> render -> save -> onSnapshot -> ...). A render
+  // caused by a genuine local edit always runs with the flag false, so it still saves.
+  if (!applyingRemoteSnapshot) saveCouriersToStorage();
 }
 
 async function onCourierAddressChange(input, which){
@@ -1312,7 +1267,7 @@ function renderAddresses(){
         <div class="es-title">Nicio adresă încărcată</div>
         <div class="es-sub">Importă un fișier CSV/Excel sau adaugă manual</div>
       </div>`;
-    saveAddressesToStorage();
+    if (!applyingRemoteSnapshot) saveAddressesToStorage(); // see the guard note at the end of this function
     return;
   }
 
@@ -1485,7 +1440,8 @@ function renderAddresses(){
     });
   });
 
-  saveAddressesToStorage();
+  // Guarded — see the note on the equivalent line in renderCouriers().
+  if (!applyingRemoteSnapshot) saveAddressesToStorage();
 }
 
 // -------------------------------------------------------------------
@@ -2914,7 +2870,7 @@ function renderRouteSummary(){
         <div class="es-sub">Adaugă curieri și adrese, apoi repartizează</div>
       </div>`;
     state.routeSelection = new Set();
-    saveRoutesToStorage();
+    if (!applyingRemoteSnapshot) saveRoutesToStorage(); // see the guard note at the end of this function
     return;
   }
 
@@ -3020,7 +2976,8 @@ function renderRouteSummary(){
     btn.addEventListener('click', () => showSendToCourierModal(parseInt(btn.dataset.sendCourier)));
   });
 
-  saveRoutesToStorage();
+  // Guarded — see the note on the equivalent line in renderCouriers().
+  if (!applyingRemoteSnapshot) saveRoutesToStorage();
 }
 
 function renderBulkMoveBar(container){
@@ -3100,57 +3057,72 @@ function wireRouteStopControls(container){
 }
 
 // -------------------------------------------------------------------
-// SEND TO COURIER — mobile link (no backend involved: the courier's
-// stops are encoded entirely into the URL hash of curier.html, which
-// the courier opens on their own phone. Delivered/not-delivered marks
-// are saved only in that phone's localStorage — they do NOT sync back
-// to this dispatcher view.)
+// SEND TO COURIER — the route is written to a Firestore document
+// (courierRuns/{runId}), and the courier's phone (curier.html?run=...)
+// opens it via a live onSnapshot listener. Delivered/not-delivered
+// marks, GPS check-ins and note edits sync back live too (see
+// syncCourierRunListeners/applyCourierRunUpdates below) — no more
+// manual "send checkins back" link/WhatsApp round trip.
 // -------------------------------------------------------------------
 
 /**
- * Compresses the route JSON before it goes into the URL — WhatsApp (and some other chat
- * apps) can silently truncate a very long link when auto-linkifying it in a message, which
- * breaks the courier's link with no clear error. LZString typically cuts this payload
- * roughly in half, since the same field names repeat for every stop.
+ * Stops keyed by address id (a map, not an array) so a single stop's status/check-in/note
+ * can be updated in Firestore with a targeted dot-path update, without rewriting the whole
+ * document — see updateStopField in curier.js. Coordinates are rounded to 6 decimals
+ * (~10cm), since Nominatim returns much more precision than is useful here. winEnd isn't
+ * stored — it's always winStart + 2h (see computeDeliveryWindows), so curier.js derives it.
  */
-function encodeCourierData(obj){
-  return LZString.compressToEncodedURIComponent(JSON.stringify(obj));
+function buildCourierRunStops(route){
+  const stops = {};
+  route.order.forEach((addrId, idx) => {
+    const a = state.addresses.find(ad => ad.id === addrId);
+    if (!a) return;
+    const win = route.windows ? route.windows[addrId] : null;
+    stops[addrId] = {
+      order: idx + 1,
+      name: a.clientName || '',
+      phone: a.phone || '',
+      addr: a.raw,
+      details: a.details || '',
+      products: a.products || '',
+      productsKg: a.productsKg,
+      note: a.customerNote || '',
+      amount: a.amount,
+      payment: a.paymentMethod || '',
+      lat: Math.round(a.lat * 1e6) / 1e6,
+      lng: Math.round(a.lng * 1e6) / 1e6,
+      winStart: win ? win.windowStart : '',
+      observatii: a.observatii || '',
+      status: 'pending',
+      checkinLat: null,
+      checkinLng: null,
+      checkinNote: null,
+      checkinAt: null
+    };
+  });
+  return stops;
 }
 
 /**
- * Stops are encoded as arrays, not objects — repeating "id","name","phone"... for every
- * single stop bloats the link a lot more than it looks, since it survives compression too
- * (LZString still has to reference each key's first occurrence). Field order here MUST
- * stay in sync with STOP_FIELDS in curier.js. winEnd isn't sent at all — it's always
- * winStart + 2h (see computeDeliveryWindows), so curier.js derives it instead of paying
- * for it in the link. Coordinates are rounded to 6 decimals (~10cm), since Nominatim
- * returns much more precision than the link needs.
+ * Creates the Firestore doc the courier's phone will read, remembers its id on the route
+ * (so the dispatcher can keep listening for live check-ins/status — see
+ * syncCourierRunListeners), and returns the link. The link is just a short Firestore
+ * document id now — no compression, no third-party shortener needed.
  */
-function buildCourierPayload(courier, route){
-  const stops = route.order.map((addrId, idx) => {
-    const a = state.addresses.find(ad => ad.id === addrId);
-    if (!a) return null;
-    const win = route.windows ? route.windows[addrId] : null;
-    return [
-      a.id, idx + 1, a.clientName || '', a.phone || '', a.raw, a.details || '', a.products || '', a.productsKg, a.customerNote || '',
-      a.amount, a.paymentMethod || '',
-      Math.round(a.lat * 1e6) / 1e6, Math.round(a.lng * 1e6) / 1e6,
-      win ? win.windowStart : '', a.observatii || ''
-    ];
-  }).filter(Boolean);
-
-  return {
-    routeId: `${courier.id}_${new Date().toISOString().slice(0, 10)}`,
-    courier: courier.name,
+async function createCourierRun(courier, route){
+  const docRef = await db.collection('courierRuns').add({
+    courierId: courier.id,
+    courierName: courier.name,
     date: new Date().toISOString().slice(0, 10),
-    stops
-  };
-}
-
-function buildCourierLink(courier, route){
-  const encoded = encodeCourierData(buildCourierPayload(courier, route));
+    stops: buildCourierRunStops(route),
+    lastPos: null,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  route.courierRunId = docRef.id;
+  saveRoutesToStorage();
+  syncCourierRunListeners();
   const base = location.href.split('#')[0].replace(/index\.html?$/i, '').replace(/\/?$/, '/');
-  return `${base}curier.html#d=${encoded}`;
+  return `${base}curier.html?run=${docRef.id}`;
 }
 
 /** Flags setups where the generated link can't actually be opened from a different phone. */
@@ -3165,25 +3137,59 @@ function courierLinkHostWarning(){
 }
 
 /**
- * Shortens a link via da.gd (free, no API key, CORS-enabled — unlike most link shorteners,
- * which block browser-side requests). A long link often gets mangled by chat apps: WhatsApp
- * in particular can auto-linkify only the first stretch of a very long URL and dump the rest
- * as plain text, which breaks the link entirely. A short link stays well under any such
- * truncation threshold. Falls back to the original long link if da.gd is unreachable or slow,
- * so sending a route never hard-fails just because a third-party service is down.
+ * Keeps one live Firestore listener per courier that has an active run (route.courierRunId),
+ * so delivered/failed marks, GPS check-ins and note edits the courier makes on their phone
+ * appear here automatically — replaces the old manual "send checkins back via WhatsApp,
+ * dispatcher opens link, reviews, applies" flow entirely.
  */
-async function shortenLink(longUrl){
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-    const res = await fetch(`https://da.gd/shorten?url=${encodeURIComponent(longUrl)}`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (!res.ok) return null;
-    const text = (await res.text()).trim();
-    return text.startsWith('http') ? text : null;
-  } catch (e){
-    console.error('Scurtarea link-ului a eșuat, folosesc link-ul complet', e);
-    return null;
+let courierRunListeners = {};
+
+function syncCourierRunListeners(){
+  Object.keys(state.routes).forEach(courierId => {
+    const route = state.routes[courierId];
+    const runId = route && route.courierRunId;
+    const existing = courierRunListeners[courierId];
+    if (existing && existing.runId === runId) return;
+    if (existing) existing.unsubscribe();
+    if (!runId){ delete courierRunListeners[courierId]; return; }
+    const unsubscribe = db.collection('courierRuns').doc(runId).onSnapshot(
+      (doc) => { if (doc.exists) applyCourierRunUpdates(doc.data()); },
+      (err) => console.error('Nu am putut sincroniza check-in-urile curierului', err)
+    );
+    courierRunListeners[courierId] = { runId, unsubscribe };
+  });
+  Object.keys(courierRunListeners).forEach(courierId => {
+    if (!state.routes[courierId]){
+      courierRunListeners[courierId].unsubscribe();
+      delete courierRunListeners[courierId];
+    }
+  });
+}
+
+/** Applies a courier's live check-ins/notes/delivery status onto the matching dispatcher-side addresses. */
+function applyCourierRunUpdates(runData){
+  if (!runData || !runData.stops) return;
+  let changed = false;
+  Object.entries(runData.stops).forEach(([addrId, stop]) => {
+    const addr = state.addresses.find(a => String(a.id) === String(addrId));
+    if (!addr) return;
+    if (stop.checkinLat != null && stop.checkinLng != null){
+      saveVerifiedAddress(addr.raw, stop.checkinLat, stop.checkinLng);
+    }
+    if (stop.observatii != null && stop.observatii !== addr.observatii){
+      addr.observatii = stop.observatii;
+      changed = true;
+    }
+    if (stop.status && stop.status !== addr.deliveryStatus){
+      addr.deliveryStatus = stop.status; // 'pending' | 'delivered' | 'failed' — not shown in UI yet, available for a future tracking view
+      changed = true;
+    }
+  });
+  updateVerifiedDbCounter();
+  if (changed){
+    renderAddresses();
+    renderRouteSummary();
+    redrawMap();
   }
 }
 
@@ -3195,7 +3201,6 @@ async function showSendToCourierModal(courierId){
     return;
   }
 
-  const longLink = buildCourierLink(courier, route);
   const warning = courierLinkHostWarning();
 
   const overlay = document.createElement('div');
@@ -3203,10 +3208,10 @@ async function showSendToCourierModal(courierId){
   overlay.innerHTML = `
     <div class="modal-box" style="max-width:340px;">
       <div class="modal-title">Trimite traseul către ${escapeHtml(courier.name)}</div>
-      <div class="hint" style="margin-bottom:4px;">Curierul scanează codul sau deschide link-ul pe telefon — vede opririle lui, în ordine, și poate bifa livrat/nelivrat direct acolo. Bifele rămân pe telefonul lui; nu apar automat aici.</div>
+      <div class="hint" style="margin-bottom:4px;">Curierul scanează codul sau deschide link-ul pe telefon — vede opririle lui, în ordine, și poate bifa livrat/nelivrat direct acolo. Bifele și check-in-urile apar live și aici, pe ecranul tău.</div>
       ${warning ? `<div class="hint" style="color:var(--danger); margin-top:8px;">⚠ ${warning}</div>` : ''}
       <div class="qr-wrap" id="courierQrWrap"></div>
-      <div class="loading-row" id="linkLoadingRow" style="justify-content:center; margin-top:10px;"><span class="spinner sp-dark"></span><span>Se scurtează linkul…</span></div>
+      <div class="loading-row" id="linkLoadingRow" style="justify-content:center; margin-top:10px;"><span class="spinner sp-dark"></span><span>Se generează linkul…</span></div>
       <div class="link-copy-row" id="linkCopyRow" style="display:none;">
         <input type="text" id="courierLinkInput" readonly value="">
         <button class="btn btn-sm" id="copyCourierLinkBtn">Copiază</button>
@@ -3221,18 +3226,23 @@ async function showSendToCourierModal(courierId){
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
   document.getElementById('closeCourierModalBtn').addEventListener('click', close);
 
-  const shortLink = await shortenLink(longLink);
-  if (!overlay.isConnected) return; // modal was closed while the shortening request was in flight
-  const link = shortLink || longLink;
+  let link;
+  try {
+    link = await createCourierRun(courier, route);
+  } catch (e){
+    console.error('Nu am putut genera link-ul curierului', e);
+    if (overlay.isConnected){
+      document.getElementById('linkLoadingRow').innerHTML = '<span class="hint" style="color:var(--danger);">Nu am putut genera linkul — verifică conexiunea și încearcă din nou.</span>';
+    }
+    return;
+  }
+  if (!overlay.isConnected) return; // modal was closed while the write was in flight
 
   document.getElementById('linkLoadingRow').style.display = 'none';
   document.getElementById('linkCopyRow').style.display = 'flex';
   document.getElementById('courierLinkInput').value = link;
   const waBtn = document.getElementById('waCourierLinkBtn');
   waBtn.disabled = false;
-  if (!shortLink){
-    showToast('Nu am putut scurta linkul (serviciu extern indisponibil) — folosesc linkul complet.', true);
-  }
 
   const qrWrap = document.getElementById('courierQrWrap');
   try {
@@ -3241,8 +3251,8 @@ async function showSendToCourierModal(courierId){
     qr.make();
     qrWrap.innerHTML = qr.createImgTag(4, 8);
   } catch (e){
-    console.error('QR generation failed (route probably too large for a QR code)', e);
-    qrWrap.innerHTML = `<div class="hint">Traseu prea mare pentru cod QR — folosește link-ul de mai jos.</div>`;
+    console.error('QR generation failed', e);
+    qrWrap.innerHTML = `<div class="hint">Nu am putut genera codul QR — folosește link-ul de mai jos.</div>`;
   }
 
   document.getElementById('copyCourierLinkBtn').addEventListener('click', async () => {

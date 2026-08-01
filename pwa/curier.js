@@ -1,19 +1,15 @@
 // ===================================================================
 // Curier — vizualizare traseu pe mobil
-// Fără server, fără cont: datele traseului sunt încapsulate integral
-// în hash-ul URL-ului (#d=...), generat de aplicația principală
-// (butonul "📱 trimite curierului" din tab-ul Trasee).
-// Bifele de livrare se salvează DOAR în acest telefon (localStorage) —
-// nu se sincronizează automat înapoi la dispecer.
+// Fără cont vizibil: la deschiderea linkului, telefonul se autentifică
+// anonim (Firebase Auth) și citește traseul din Firestore
+// (courierRuns/{runId}, generat de aplicația principală — butonul
+// "Trimite traseul" din tab-ul Curieri). Bifele de livrare, check-in-
+// urile GPS și observațiile scrise aici se sincronizează live, automat,
+// înapoi la dispecer — nu mai e nevoie de niciun link/WhatsApp de retur.
 // ===================================================================
 
-function decodeCourierData(encoded){
-  const json = LZString.decompressFromEncodedURIComponent(encoded);
-  return JSON.parse(json);
-}
-
-// Must stay in the exact same order as the array built in app.js's buildCourierPayload().
-const STOP_FIELDS = ['id', 'o', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'observatii'];
+const db = firebase.firestore();
+let currentRunId = null;
 
 function addMinutesToTime(hhmm, minutesToAdd){
   const [h, m] = hhmm.split(':').map(Number);
@@ -22,97 +18,99 @@ function addMinutesToTime(hhmm, minutesToAdd){
   return `${Math.floor(total / 60).toString().padStart(2, '0')}:${(total % 60).toString().padStart(2, '0')}`;
 }
 
-/** Turns a compact [id, o, name, ...] array back into the named-field shape the rest of this file expects. */
-function stopFromArray(arr){
-  const s = {};
-  STOP_FIELDS.forEach((key, i) => { s[key] = arr[i]; });
-  s.winEnd = s.winStart ? addMinutesToTime(s.winStart, 120) : '';
-  return s;
+/** Firestore stores stops as a map keyed by address id (see app.js buildCourierRunStops) — turns it into the array shape the rest of this file expects, sorted isn't needed here (render() sorts by .o). */
+function stopsMapToArray(stopsMap){
+  return Object.entries(stopsMap || {}).map(([id, s]) => ({
+    id: Number(id),
+    o: s.order,
+    name: s.name || '',
+    phone: s.phone || '',
+    addr: s.addr || '',
+    details: s.details || '',
+    products: s.products || '',
+    productsKg: s.productsKg,
+    note: s.note || '',
+    amount: s.amount,
+    payment: s.payment || '',
+    lat: s.lat,
+    lng: s.lng,
+    winStart: s.winStart || '',
+    winEnd: s.winStart ? addMinutesToTime(s.winStart, 120) : '',
+    observatii: s.observatii || ''
+  }));
 }
 
-function loadPayloadFromHash(){
-  const hash = location.hash.slice(1);
-  const params = new URLSearchParams(hash);
-  const encoded = params.get('d');
-  if (!encoded) return null;
-  try {
-    const payload = decodeCourierData(encoded);
-    if (Array.isArray(payload.stops)) payload.stops = payload.stops.map(stopFromArray);
-    return payload;
-  } catch (e){
-    console.error('Nu am putut citi datele traseului din link', e);
-    return null;
+/**
+ * statuses/checkins are rebuilt fresh from every snapshot — safe because they're only ever
+ * written immediately (no debounce), so Firestore's own snapshot already reflects our latest
+ * local write by the time it fires. notes is deliberately NOT touched here (see the
+ * data-obs-id handler in render()) — it holds an in-progress local edit that must survive
+ * an unrelated snapshot arriving mid-typing, before the debounced write has gone out.
+ */
+function applyRunSnapshot(runId, data){
+  payload = {
+    routeId: runId,
+    courier: data.courierName,
+    date: data.date,
+    stops: stopsMapToArray(data.stops)
+  };
+  statuses = {};
+  checkins = {};
+  Object.entries(data.stops || {}).forEach(([id, s]) => {
+    if (s.status && s.status !== 'pending') statuses[id] = s.status;
+    if (s.checkinLat != null && s.checkinLng != null) checkins[id] = { lat: s.checkinLat, lng: s.checkinLng };
+  });
+  render();
+}
+
+/** Targeted dot-path update — touches only this one stop's fields, never rewrites the whole run document. */
+function updateStopField(stopId, fields){
+  if (!currentRunId) return;
+  const updates = {};
+  Object.entries(fields).forEach(([key, val]) => { updates[`stops.${stopId}.${key}`] = val; });
+  db.collection('courierRuns').doc(currentRunId).update(updates)
+    .catch(e => console.error('Nu am putut sincroniza cu dispecerul', e));
+}
+
+function initCourierRun(){
+  currentRunId = new URLSearchParams(location.search).get('run');
+  if (!currentRunId){
+    loadingRun = false;
+    payload = null;
+    render();
+    return;
   }
-}
-
-function statusStorageKey(routeId){
-  return `curier-status:${routeId}`;
-}
-
-function loadStatuses(routeId){
-  try {
-    const raw = localStorage.getItem(statusStorageKey(routeId));
-    return raw ? JSON.parse(raw) : {};
-  } catch (e){
-    return {};
-  }
-}
-
-function saveStatuses(routeId, statuses){
-  try {
-    localStorage.setItem(statusStorageKey(routeId), JSON.stringify(statuses));
-  } catch (e){
-    console.error('Nu am putut salva statusul pe acest telefon', e);
-  }
-}
-
-// ---- GPS check-ins: the courier's actual arrival position at a stop, meant to be sent
-// back to the dispatcher so it can be reused as a verified address next time. Stored
-// separately from delivery statuses since they serve a different purpose (address
-// accuracy, not "did I deliver this").
-function checkinStorageKey(routeId){
-  return `curier-checkin:${routeId}`;
-}
-
-function loadCheckins(routeId){
-  try {
-    const raw = localStorage.getItem(checkinStorageKey(routeId));
-    return raw ? JSON.parse(raw) : {};
-  } catch (e){
-    return {};
-  }
-}
-
-function saveCheckins(routeId, checkins){
-  try {
-    localStorage.setItem(checkinStorageKey(routeId), JSON.stringify(checkins));
-  } catch (e){
-    console.error('Nu am putut salva check-in-ul pe acest telefon', e);
-  }
-}
-
-// ---- Observații: free-text working notes, editable both here and in the dispatcher UI.
-// Edits made here stay local until "Trimite verificările înapoi" sends them back, at
-// which point they overwrite the matching address's note in the dispatcher's list.
-function notesStorageKey(routeId){
-  return `curier-notes:${routeId}`;
-}
-
-function loadNotes(routeId){
-  try {
-    const raw = localStorage.getItem(notesStorageKey(routeId));
-    return raw ? JSON.parse(raw) : {};
-  } catch (e){
-    return {};
-  }
-}
-
-function saveNotes(routeId, notes){
-  try {
-    localStorage.setItem(notesStorageKey(routeId), JSON.stringify(notes));
-  } catch (e){
-    console.error('Nu am putut salva observația pe acest telefon', e);
-  }
+  // SESSION persistence (tab-scoped, not shared via IndexedDB/localStorage) — curier.html
+  // and index.html are the same origin, so with the default LOCAL persistence, a courier
+  // link opened in the same browser as the dispatcher would silently sign the dispatcher
+  // OUT of their real account and INTO this anonymous session, in every tab of that origin.
+  firebase.auth().setPersistence(firebase.auth.Auth.Persistence.SESSION)
+    .then(() => firebase.auth().signInAnonymously())
+    .then(() => {
+      db.collection('courierRuns').doc(currentRunId).onSnapshot(
+        (doc) => {
+          loadingRun = false;
+          if (!doc.exists){
+            payload = null;
+            render();
+            return;
+          }
+          applyRunSnapshot(currentRunId, doc.data());
+        },
+        (err) => {
+          console.error('Nu am putut încărca traseul', err);
+          loadingRun = false;
+          payload = null;
+          render();
+        }
+      );
+    })
+    .catch((err) => {
+      console.error('Autentificare anonimă eșuată', err);
+      loadingRun = false;
+      payload = null;
+      render();
+    });
 }
 
 function getCurrentPosition(){
@@ -127,22 +125,6 @@ function getCurrentPosition(){
       maximumAge: 0
     });
   });
-}
-
-/** Same da.gd shortener as the dispatcher side (app.js) — duplicated since this page stands alone, no shared module. */
-async function shortenLink(longUrl){
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
-    const res = await fetch(`https://da.gd/shorten?url=${encodeURIComponent(longUrl)}`, { signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (!res.ok) return null;
-    const text = (await res.text()).trim();
-    return text.startsWith('http') ? text : null;
-  } catch (e){
-    console.error('Scurtarea link-ului a eșuat, folosesc link-ul complet', e);
-    return null;
-  }
 }
 
 function escapeHtml(str){
@@ -193,7 +175,9 @@ let payload = null;
 let statuses = {};
 let checkins = {};
 let notes = {};
+let noteSaveTimers = {};
 let currentView = 'list';
+let loadingRun = true; // true until the first Firestore snapshot (or an error) arrives — distinguishes "still loading" from "genuinely invalid link" in render()
 
 // ---- Map view: numbered stop markers, the courier's own live position, and a
 // tap-to-see "how long from here" ETA — all computed live via OSRM, no route geometry
@@ -442,7 +426,11 @@ function render(){
   const root = document.getElementById('root');
 
   if (!payload || !Array.isArray(payload.stops)){
-    root.innerHTML = `
+    root.innerHTML = loadingRun ? `
+      <div class="empty-state">
+        <div class="es-icon">${ICONS.clock}</div>
+        <div class="es-title">Se încarcă traseul…</div>
+      </div>` : `
       <div class="empty-state">
         <div class="es-icon">${ICONS.warn}</div>
         <div class="es-title">Link invalid sau incomplet</div>
@@ -457,8 +445,6 @@ function render(){
   const delivered = resolved.filter(s => statuses[s.id] === 'delivered').length;
   const failed = resolved.length - delivered;
   const pct = total ? Math.round(resolved.length / total * 100) : 0;
-  const checkinCount = Object.keys(checkins).length;
-  const editedNoteCount = getEditedNoteEntries().length;
 
   const next = pending[0];
   const rest = pending.slice(1);
@@ -477,20 +463,16 @@ function render(){
         <button class="${currentView === 'list' ? 'active' : ''}" data-view="list">${ICONS.list} Listă</button>
         <button class="${currentView === 'map' ? 'active' : ''}" data-view="map">${ICONS.map} Hartă</button>
       </div>
-      ${(checkinCount || editedNoteCount) ? `<button class="send-checkins-btn" id="sendCheckinsBtn">${ICONS.send}<span class="btn-label">Trimite ${sendBackLabel(checkinCount, editedNoteCount)} către dispecer</span></button>` : ''}
     </div>
     <div class="content">
       <div id="stopsRoot"></div>
-      <div class="foot-note">Bifele și check-in-urile rămân salvate doar pe acest telefon, până le trimiți tu înapoi.</div>
+      <div class="foot-note">Bifele, check-in-urile și observațiile ajung live la dispecer, pe măsură ce le faci.</div>
     </div>
   `;
 
   root.querySelectorAll('[data-view]').forEach(btn => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
-
-  const sendBtn = document.getElementById('sendCheckinsBtn');
-  if (sendBtn) sendBtn.addEventListener('click', sendCheckinsBack);
 
   const stopsRoot = document.getElementById('stopsRoot');
   let html = '';
@@ -511,9 +493,10 @@ function render(){
       const id = btn.dataset.mark;
       const value = btn.dataset.value;
       const wasResolved = !!statuses[id];
-      if (statuses[id] === value) delete statuses[id];
-      else statuses[id] = value;
-      saveStatuses(payload.routeId, statuses);
+      const newStatus = statuses[id] === value ? 'pending' : value;
+      if (newStatus === 'pending') delete statuses[id];
+      else statuses[id] = newStatus;
+      updateStopField(id, { status: newStatus });
       // a pending stop just getting resolved gets a beat to show the confirmed state
       // before the list reflows it away — an undo (tapping the same value again) or a
       // switch (delivered <-> failed) from the compact "Finalizate" rows re-renders instantly
@@ -534,34 +517,21 @@ function render(){
 
   stopsRoot.querySelectorAll('[data-obs-id]').forEach(ta => {
     ta.addEventListener('input', () => {
-      notes[ta.dataset.obsId] = ta.value;
-      saveNotes(payload.routeId, notes);
+      const id = ta.dataset.obsId;
+      notes[id] = ta.value;
+      // debounced — an update per keystroke would be wasteful and could visibly flicker as
+      // each write echoes back through the snapshot listener while still typing
+      clearTimeout(noteSaveTimers[id]);
+      noteSaveTimers[id] = setTimeout(() => updateStopField(id, { observatii: ta.value }), 800);
     });
   });
 
   updateMapMarkers(); // no-op if the map hasn't been opened yet — keeps marker colors in sync with status once it has
 }
 
-/** Local edit (if any) wins over what the dispatcher originally sent, until the courier explicitly sends it back. */
+/** Local in-progress edit (if any) wins over the synced value — keeps the textarea from jumping back mid-typing if an unrelated snapshot arrives before the debounced write in updateStopField has gone out. */
 function getNoteValue(s){
   return notes[s.id] != null ? notes[s.id] : (s.observatii || '');
-}
-
-/** Observații actually changed on this phone vs. what the dispatcher originally sent — these are what "send back" transmits. */
-function getEditedNoteEntries(){
-  if (!payload) return [];
-  return payload.stops.map(s => {
-    const edited = notes[String(s.id)];
-    if (edited === undefined || edited === (s.observatii || '')) return null;
-    return [s.id, edited];
-  }).filter(Boolean);
-}
-
-function sendBackLabel(checkinCount, editedNoteCount){
-  const parts = [];
-  if (checkinCount) parts.push(`${checkinCount} check-in${checkinCount === 1 ? '' : '-uri'}`);
-  if (editedNoteCount) parts.push(`${editedNoteCount} ${editedNoteCount === 1 ? 'observație' : 'observații'}`);
-  return parts.join(' și ');
 }
 
 /** Full stop card — used both for the emphasized "next stop" hero and the quieter "rest" list, same markup, different class. */
@@ -619,13 +589,10 @@ async function doCheckin(stopId, btn){
   btn.disabled = true;
   try {
     const pos = await getCurrentPosition();
-    checkins[stopId] = {
-      lat: Math.round(pos.coords.latitude * 1e6) / 1e6,
-      lng: Math.round(pos.coords.longitude * 1e6) / 1e6,
-      accuracy: pos.coords.accuracy,
-      savedAt: new Date().toISOString()
-    };
-    saveCheckins(payload.routeId, checkins);
+    const lat = Math.round(pos.coords.latitude * 1e6) / 1e6;
+    const lng = Math.round(pos.coords.longitude * 1e6) / 1e6;
+    checkins[stopId] = { lat, lng };
+    updateStopField(stopId, { checkinLat: lat, checkinLng: lng, checkinAt: new Date().toISOString() });
     render(); // rebuilds the button in its "done" state — loading class goes away with it
   } catch (e){
     console.error('Check-in eșuat', e);
@@ -638,39 +605,7 @@ async function doCheckin(stopId, btn){
   }
 }
 
-async function sendCheckinsBack(){
-  const btn = document.getElementById('sendCheckinsBtn');
-  const label = btn.querySelector('.btn-label');
-  const originalText = label.textContent;
-  label.textContent = 'Se generează linkul…';
-  btn.disabled = true;
-
-  const entries = Object.entries(checkins).map(([stopId, c]) => {
-    const stop = payload.stops.find(s => String(s.id) === String(stopId));
-    return stop ? [stop.addr, c.lat, c.lng] : null;
-  }).filter(Boolean);
-
-  const returnPayload = { courier: payload.courier, date: payload.date, checkins: entries, notes: getEditedNoteEntries() };
-  const encoded = LZString.compressToEncodedURIComponent(JSON.stringify(returnPayload));
-  const base = location.href.split('#')[0].replace(/curier\.html?$/i, '').replace(/\/?$/, '/');
-  const longLink = `${base}index.html#checkins=${encoded}`;
-
-  const shortLink = await shortenLink(longLink);
-  const link = shortLink || longLink;
-
-  label.textContent = originalText;
-  btn.disabled = false;
-
-  const text = encodeURIComponent(`Check-in-uri traseu (${payload.courier}, ${payload.date}):\n${link}`);
-  window.open(`https://wa.me/?text=${text}`, '_blank');
-}
-
 document.addEventListener('DOMContentLoaded', () => {
-  payload = loadPayloadFromHash();
-  if (payload && payload.routeId){
-    statuses = loadStatuses(payload.routeId);
-    checkins = loadCheckins(payload.routeId);
-    notes = loadNotes(payload.routeId);
-  }
-  render();
+  render(); // "se încarcă…" state while sign-in + the first Firestore snapshot are in flight
+  initCourierRun();
 });

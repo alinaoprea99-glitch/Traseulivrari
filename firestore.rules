@@ -3,7 +3,12 @@ rules_version = '2';
 // Faza 1: doar dispecerul (contul autorizat) citește/scrie datele de bază.
 // 3 documente cu ID fix (couriers/addresses/routes), fiecare cu array-ul/obiectul
 // complet — traducere directă a celor 3 chei localStorage folosite până acum.
-// Colecțiile courierRuns/stops vor primi reguli proprii în Fazele 2-5.
+//
+// Faza 2: courierRuns — un document per traseu trimis unui curier. Curierul se
+// autentifică anonim și primește linkul cu ID-ul documentului (secretul e ID-ul
+// însuși, negăsibil prin ghicire — Firestore auto-ID, ~120 biți). "list" e explicit
+// interzis, ca niciun cont anonim să nu poată enumera traseele altor curieri/clienți
+// (get pe un ID cunoscut e permis; o interogare pe toată colecția, nu).
 service cloud.firestore {
   match /databases/{database}/documents {
     function isDispatcher() {
@@ -13,6 +18,15 @@ service cloud.firestore {
 
     match /dispatcherData/{docId} {
       allow read, write: if isDispatcher();
+    }
+
+    match /courierRuns/{runId} {
+      allow get: if request.auth != null;
+      allow list: if false;
+      allow create: if isDispatcher();
+      allow update: if request.auth != null
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stops']);
+      allow delete: if false;
     }
   }
 }
