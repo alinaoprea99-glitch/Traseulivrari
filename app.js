@@ -1717,11 +1717,20 @@ async function geocodeAllPending(){
       a.outOfArea = false;
     }
     done++;
+    // Guarded (no save-per-iteration): renderAddresses() normally saves to Firestore at the
+    // end of every render, but doing that on every single address here means the resulting
+    // onSnapshot echo can arrive mid-loop and REPLACE state.addresses with a slightly older
+    // snapshot — silently discarding whatever this loop had already geocoded past that point
+    // (surfacing as "bulk locate didn't do them all, had to do each one by hand"). One real
+    // save after the whole loop finishes avoids the mid-loop race entirely.
+    applyingRemoteSnapshot = true;
     renderAddresses();
     redrawMap();
+    applyingRemoteSnapshot = false;
     // Nominatim usage policy: max ~1 request/sec
     await sleep(1000);
   }
+  saveAddressesToStorage();
 
   statusRow.style.display = 'none';
   const errCount = state.addresses.filter(a => a.status === 'error').length;
