@@ -1321,6 +1321,9 @@ function renderAddresses(){
       : '';
 
     const cancelledBadge = a.cancelled ? `<div class="addr-status err">✕ comandă anulată <button class="addr-action-link" data-restore="${a.id}" style="font-size:10.5px;">restaurează</button></div>` : '';
+    const deliveryBadge = a.deliveryStatus === 'delivered' ? `<span class="delivery-badge delivered">✓ Livrat</span>`
+      : a.deliveryStatus === 'failed' ? `<span class="delivery-badge failed">✕ Nelivrat</span>`
+      : '';
     const actionRow = a.cancelled ? '' : `
         <div class="addr-action-row">
           <button class="addr-action-link" data-edit="${a.id}">${ICONS.pencil} editează</button>
@@ -1331,9 +1334,12 @@ function renderAddresses(){
         </div>`;
 
     if (a.cancelled) item.classList.add('addr-cancelled');
+    if (a.deliveryStatus === 'delivered') item.classList.add('addr-delivered');
+    else if (a.deliveryStatus === 'failed') item.classList.add('addr-delivery-failed');
     item.innerHTML = `
       <span class="addr-badge">${idx + 1}</span>
       <div class="addr-text">
+        ${deliveryBadge}
         <div class="addr-main">${titleLine}</div>
         ${subAddressLine}
         ${detailsLine}
@@ -2935,15 +2941,22 @@ function renderRouteSummary(){
         ? `<div class="addr-window-chip${win.afterLimit ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
         : '';
       const obsLine = addr.observatii ? `<div class="addr-obs-line">${ICONS.tag}${escapeHtml(addr.observatii)}</div>` : '';
+      const deliveryBadge = addr.deliveryStatus === 'delivered' ? `<span class="delivery-badge delivered">✓ Livrat</span>`
+        : addr.deliveryStatus === 'failed' ? `<span class="delivery-badge failed">✕ Nelivrat</span>`
+        : '';
       const isFirst = idx === 0;
       const isLast = idx === route.order.length - 1;
       const isChecked = state.routeSelection.has(addr.id);
+
+      if (addr.deliveryStatus === 'delivered') stopEl.classList.add('addr-delivered');
+      else if (addr.deliveryStatus === 'failed') stopEl.classList.add('addr-delivery-failed');
 
       stopEl.innerHTML = `
         <div class="rs-drag-handle" draggable="true" title="Trage pentru a reordona">⠿</div>
         <input type="checkbox" class="rs-checkbox" data-select="${addr.id}" ${isChecked ? 'checked' : ''}>
         <span class="addr-badge" style="background:${c.color}">${idx + 1}</span>
         <div class="addr-text">
+          ${deliveryBadge}
           <div class="addr-main">${titleLine}</div>
           ${windowChip}
           ${subAddressLine}
