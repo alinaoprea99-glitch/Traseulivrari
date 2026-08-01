@@ -62,6 +62,10 @@ function applyRunSnapshot(runId, data){
     if (s.checkinLat != null && s.checkinLng != null) checkins[id] = { lat: s.checkinLat, lng: s.checkinLng };
   });
   render();
+  // Starts live position streaming (courierRuns.lastPos) as soon as a route is loaded, not
+  // only once the courier happens to open the map tab — a no-op after the first call
+  // (startLocationWatch guards on watchId already being set).
+  startLocationWatch();
 }
 
 /** Targeted dot-path update — touches only this one stop's fields, never rewrites the whole run document. */
@@ -271,6 +275,14 @@ const TRAFFIC_FACTOR_MIN = 0.6;
 const TRAFFIC_FACTOR_MAX = 2.5;
 let recentFixes = [];
 
+// ---- Live position streamed to the dispatcher/customer (courierRuns.lastPos) — throttled
+// by time AND distance so a stationary courier (parked, delivering) doesn't write to
+// Firestore on every single GPS tick; a moving one still updates promptly.
+const POS_UPDATE_MIN_INTERVAL_MS = 15000;
+const POS_UPDATE_MIN_DISTANCE_KM = 0.05;
+let lastPosSentAt = 0;
+let lastPosSentCoords = null;
+
 function haversineKm(lat1, lon1, lat2, lon2){
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -303,6 +315,22 @@ function startLocationWatch(){
       const now = Date.now();
       recentFixes.push({ lat: pos.coords.latitude, lng: pos.coords.longitude, t: now });
       recentFixes = recentFixes.filter(f => now - f.t <= RECENT_FIXES_WINDOW_MS);
+
+      // Send even while the courier is on the list view (not just the map) — this is what
+      // will eventually drive the customer tracking page, not just this phone's own map.
+      const movedFar = !lastPosSentCoords
+        || haversineKm(lastPosSentCoords.lat, lastPosSentCoords.lng, pos.coords.latitude, pos.coords.longitude) >= POS_UPDATE_MIN_DISTANCE_KM;
+      if (currentRunId && movedFar && now - lastPosSentAt >= POS_UPDATE_MIN_INTERVAL_MS){
+        lastPosSentAt = now;
+        lastPosSentCoords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        db.collection('courierRuns').doc(currentRunId).update({
+          lastPos: {
+            lat: Math.round(pos.coords.latitude * 1e6) / 1e6,
+            lng: Math.round(pos.coords.longitude * 1e6) / 1e6,
+            updatedAt: new Date().toISOString()
+          }
+        }).catch(e => console.error('Nu am putut trimite poziția live', e));
+      }
 
       if (!courierMap) return;
       const latlng = [pos.coords.latitude, pos.coords.longitude];
@@ -414,11 +442,10 @@ function switchView(view){
   document.body.classList.toggle('view-map', view === 'map');
   if (view === 'map'){
     initCourierMapIfNeeded();
-    startLocationWatch();
     setTimeout(() => courierMap && courierMap.invalidateSize(), 50);
-  } else {
-    stopLocationWatch();
   }
+  // GPS watch is NOT tied to the map tab (see applyRunSnapshot) — it needs to keep running
+  // on the list view too, since that's where the courier actually spends their day.
   render();
 }
 
@@ -445,6 +472,7 @@ function render(){
   const delivered = resolved.filter(s => statuses[s.id] === 'delivered').length;
   const failed = resolved.length - delivered;
   const pct = total ? Math.round(resolved.length / total * 100) : 0;
+  if (total && resolved.length === total) stopLocationWatch(); // day's route is done — no reason to keep tracking
 
   const next = pending[0];
   const rest = pending.slice(1);

@@ -9,6 +9,8 @@ rules_version = '2';
 // însuși, negăsibil prin ghicire — Firestore auto-ID, ~120 biți). "list" e explicit
 // interzis, ca niciun cont anonim să nu poată enumera traseele altor curieri/clienți
 // (get pe un ID cunoscut e permis; o interogare pe toată colecția, nu).
+//
+// Faza 3: lastPos (poziția GPS live a curierului) adăugat la câmpurile permise la update.
 service cloud.firestore {
   match /databases/{database}/documents {
     function isDispatcher() {
@@ -25,7 +27,7 @@ service cloud.firestore {
       allow list: if false;
       allow create: if isDispatcher();
       allow update: if request.auth != null
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stops']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stops', 'lastPos']);
       allow delete: if false;
     }
   }
