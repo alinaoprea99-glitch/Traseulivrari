@@ -189,6 +189,7 @@ let meMarker = null;
 let watchId = null;
 let lastKnownPos = null;
 let routeLineFetchedFor = null; // routeId this run's line was fetched for, to avoid refetching on every toggle
+let routeLineCoords = null; // cached OSRM geometry ([lng,lat] pairs) for the current route, redrawn (not refetched) on every status change
 
 const STATUS_COLORS = { pending: '#5B6B6D', delivered: '#2D6A4F', failed: '#C23B22' };
 
@@ -237,22 +238,62 @@ function updateMapMarkers(){
 }
 
 async function fetchAndDrawRouteLine(){
-  if (!payload || routeLineFetchedFor === payload.routeId) return;
-  const pts = payload.stops.filter(s => s.lat != null).map(s => `${s.lng},${s.lat}`);
-  if (pts.length < 2) return;
-  routeLineFetchedFor = payload.routeId;
-  try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${pts.join(';')}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (data.code === 'Ok' && data.routes && data.routes.length){
-      const coords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-      routeLineLayer.clearLayers();
-      L.polyline(coords, { color: '#FF5A1F', weight: 4, opacity: 0.75 }).addTo(routeLineLayer);
+  if (!payload) return;
+  if (routeLineFetchedFor !== payload.routeId){
+    const pts = payload.stops.filter(s => s.lat != null).map(s => `${s.lng},${s.lat}`);
+    if (pts.length < 2) return;
+    routeLineFetchedFor = payload.routeId;
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${pts.join(';')}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.code === 'Ok' && data.routes && data.routes.length){
+        routeLineCoords = data.routes[0].geometry.coordinates; // [lng,lat] pairs, OSRM's raw order
+      }
+    } catch (e){
+      console.error('Nu am putut desena linia traseului pe hartă', e);
     }
-  } catch (e){
-    console.error('Nu am putut desena linia traseului pe hartă', e);
   }
+  drawColoredRouteLine();
+}
+
+/**
+ * Splits the fetched route geometry into one polyline leg per stop — from the previous
+ * stop's matched point up to this stop's — so each leg can be colored by that stop's
+ * delivery status. This is what makes the route visually "green up" as deliveries happen,
+ * instead of staying one flat color for the whole day. Each stop's own [lat,lng] is matched
+ * to its NEAREST point along the geometry, searched only forward from the previous stop's
+ * match — stops are visited in order, so this keeps a road that loops back near an earlier
+ * point from confusing the split.
+ */
+function splitGeometryByStops(coordinates, stopLatLngs){
+  const legs = [];
+  let searchStart = 0;
+  let legStart = 0;
+  stopLatLngs.forEach((stop) => {
+    let bestIdx = searchStart, bestDist = Infinity;
+    for (let i = searchStart; i < coordinates.length; i++){
+      const [lng, lat] = coordinates[i];
+      const d = (lat - stop.lat) ** 2 + (lng - stop.lng) ** 2;
+      if (d < bestDist){ bestDist = d; bestIdx = i; }
+    }
+    legs.push(coordinates.slice(legStart, bestIdx + 1));
+    legStart = bestIdx;
+    searchStart = bestIdx;
+  });
+  return legs;
+}
+
+function drawColoredRouteLine(){
+  if (!routeLineLayer || !routeLineCoords || !payload) return;
+  routeLineLayer.clearLayers();
+  const stopsWithCoords = payload.stops.filter(s => s.lat != null).sort((a, b) => a.o - b.o);
+  const legs = splitGeometryByStops(routeLineCoords, stopsWithCoords.map(s => ({ lat: s.lat, lng: s.lng })));
+  legs.forEach((leg, i) => {
+    const status = statuses[stopsWithCoords[i].id] || 'pending';
+    const latlngs = leg.map(([lng, lat]) => [lat, lng]);
+    L.polyline(latlngs, { color: STATUS_COLORS[status], weight: 4, opacity: 0.8 }).addTo(routeLineLayer);
+  });
 }
 
 // ---- Live "traffic feel" calibration ------------------------------------------------
@@ -527,6 +568,7 @@ function render(){
   });
 
   updateMapMarkers(); // no-op if the map hasn't been opened yet — keeps marker colors in sync with status once it has
+  drawColoredRouteLine(); // no-op until the route line has been fetched at least once
 }
 
 /** Local in-progress edit (if any) wins over the synced value — keeps the textarea from jumping back mid-typing if an unrelated snapshot arrives before the debounced write in updateStopField has gone out. */

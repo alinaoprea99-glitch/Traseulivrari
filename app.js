@@ -3507,6 +3507,32 @@ function focusAddressOnMap(addrId){
   }, 350);
 }
 
+/**
+ * Splits a route's OSRM geometry into one polyline leg per stop — from the previous stop's
+ * matched point up to this stop's — so each leg can be colored by that stop's delivery
+ * status (the route visually "greens up" as the courier delivers). Each stop's own
+ * [lat,lng] is matched to its NEAREST point along the geometry, searched only forward from
+ * the previous stop's match, so a road that loops back near an earlier point doesn't
+ * confuse the split.
+ */
+function splitGeometryByStops(coordinates, stopLatLngs){
+  const legs = [];
+  let searchStart = 0;
+  let legStart = 0;
+  stopLatLngs.forEach((stop) => {
+    let bestIdx = searchStart, bestDist = Infinity;
+    for (let i = searchStart; i < coordinates.length; i++){
+      const [lng, lat] = coordinates[i];
+      const d = (lat - stop.lat) ** 2 + (lng - stop.lng) ** 2;
+      if (d < bestDist){ bestDist = d; bestIdx = i; }
+    }
+    legs.push(coordinates.slice(legStart, bestIdx + 1));
+    legStart = bestIdx;
+    searchStart = bestIdx;
+  });
+  return legs;
+}
+
 function redrawMap(){
   markersLayer.clearLayers();
   routeLinesLayer.clearLayers();
@@ -3537,16 +3563,21 @@ function redrawMap(){
     }
 
     if (route){
-      // numbered stop markers
+      // numbered stop markers — colored by delivery status once the courier has acted on
+      // a stop (see applyCourierRunUpdates), courier's own color while still pending
+      const stopsInOrder = route.order.map(id => state.addresses.find(a => a.id === id)).filter(Boolean);
       route.order.forEach((addrId, idx) => {
         const addr = state.addresses.find(a => a.id === addrId);
         if (!addr) return;
         const isLowConfidence = !addr.manuallyAdjusted && addr.confidence && addr.confidence !== 'high' && addr.confidence !== 'verified';
         const ringColor = isLowConfidence ? 'var(--danger)' : '#fff';
         const ringWidth = isLowConfidence ? 3 : 2;
+        const fillColor = addr.deliveryStatus === 'delivered' ? 'var(--depot)'
+          : addr.deliveryStatus === 'failed' ? 'var(--danger)'
+          : c.color;
         const icon = L.divIcon({
           className: '',
-          html: `<div style="background:${c.color};color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums;font-size:11px;font-weight:600;border:${ringWidth}px solid ${ringColor};box-shadow:0 1px 4px rgba(0,0,0,0.25);">${idx+1}</div>`,
+          html: `<div style="background:${fillColor};color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums;font-size:11px;font-weight:600;border:${ringWidth}px solid ${ringColor};box-shadow:0 1px 4px rgba(0,0,0,0.25);">${idx+1}</div>`,
           iconSize: [22,22],
           iconAnchor: [11,11]
         });
@@ -3557,20 +3588,29 @@ function redrawMap(){
         allPoints.push([addr.lat, addr.lng]);
       });
 
-      // route line
+      // route line — split into one leg per stop, each colored by that stop's delivery
+      // status, so the route visually "greens up" as the courier delivers along the way
       if (route.geometry){
-        const latlngs = route.geometry.coordinates.map(([lng,lat]) => [lat,lng]);
-        L.polyline(latlngs, { color: c.color, weight: 3.5, opacity: 0.85 }).addTo(routeLinesLayer);
+        const legs = splitGeometryByStops(route.geometry.coordinates, stopsInOrder.map(a => ({ lat: a.lat, lng: a.lng })));
+        legs.forEach((leg, i) => {
+          const legColor = stopsInOrder[i].deliveryStatus === 'delivered' ? 'var(--depot)'
+            : stopsInOrder[i].deliveryStatus === 'failed' ? 'var(--danger)'
+            : c.color;
+          const latlngs = leg.map(([lng,lat]) => [lat,lng]);
+          L.polyline(latlngs, { color: legColor, weight: 3.5, opacity: 0.85 }).addTo(routeLinesLayer);
+        });
       } else {
         // straight-line fallback
         const end = c.sameAsStart || c.end.status !== 'ok' ? c.start : c.end;
-        const pts = [[c.start.lat, c.start.lng]];
-        route.order.forEach(id => {
-          const addr = state.addresses.find(a => a.id === id);
-          if (addr) pts.push([addr.lat, addr.lng]);
+        let prev = c.start;
+        stopsInOrder.forEach(addr => {
+          const legColor = addr.deliveryStatus === 'delivered' ? 'var(--depot)'
+            : addr.deliveryStatus === 'failed' ? 'var(--danger)'
+            : c.color;
+          L.polyline([[prev.lat, prev.lng], [addr.lat, addr.lng]], { color: legColor, weight: 3, opacity: 0.6, dashArray: '6,6' }).addTo(routeLinesLayer);
+          prev = addr;
         });
-        pts.push([end.lat, end.lng]);
-        L.polyline(pts, { color: c.color, weight: 3, opacity: 0.6, dashArray: '6,6' }).addTo(routeLinesLayer);
+        L.polyline([[prev.lat, prev.lng], [end.lat, end.lng]], { color: c.color, weight: 3, opacity: 0.6, dashArray: '6,6' }).addTo(routeLinesLayer);
       }
 
       legendHtml += `<div class="lg-row"><span class="lg-dot" style="background:${c.color}"></span><span class="lg-name">${escapeHtml(c.name)}</span><span class="lg-dist">${route.totalKm.toFixed(1)} km</span></div>`;
