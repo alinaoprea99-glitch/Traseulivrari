@@ -11,6 +11,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
 
 <style>
 :root{
@@ -292,7 +296,7 @@ input[type=file]{display:none;}
   text-transform:uppercase;
   letter-spacing:0.03em;
 }
-.field input[type=text], .field select, .field textarea{
+.field input[type=text], .field input[type=email], .field input[type=password], .field select, .field textarea{
   width:100%;
   padding:8px 10px;
   border:1px solid var(--line);
@@ -301,9 +305,10 @@ input[type=file]{display:none;}
   font-size:13px;
   background:var(--white);
   color:var(--ink);
+  box-sizing:border-box;
 }
 .field textarea{resize:vertical; box-sizing:border-box; line-height:1.4;}
-.field input[type=text]:focus, .field select:focus, .field textarea:focus{
+.field input[type=text]:focus, .field input[type=email]:focus, .field input[type=password]:focus, .field select:focus, .field textarea:focus{
   outline:2px solid var(--route);
   outline-offset:-1px;
   border-color:var(--route);
@@ -966,7 +971,25 @@ input[type=file]{display:none;}
 </head>
 <body>
 
-<div class="app">
+<div class="modal-overlay" id="loginScreen" style="display:none;">
+  <div class="modal-box" style="max-width:320px;">
+    <div class="modal-title">Autentificare dispecer</div>
+    <form id="loginForm">
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="loginEmail" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label>Parolă</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" required>
+      </div>
+      <div class="hint" id="loginError" style="display:none; color:var(--danger); margin-bottom:8px;"></div>
+      <button type="submit" class="btn btn-primary btn-block" id="loginSubmitBtn">Intră în cont</button>
+    </form>
+  </div>
+</div>
+
+<div class="app" id="appRoot" style="display:none;">
 
   <!-- ============ SIDEBAR ============ -->
   <div class="sidebar">
@@ -976,6 +999,7 @@ input[type=file]{display:none;}
         <span class="label">Trasee curieri</span>
       </div>
       <div class="brand-sub" id="dateStamp">Manifest de livrare</div>
+      <button class="btn btn-ghost btn-sm" id="logoutBtn" style="margin-top:8px;" title="Deconectare">Deconectare</button>
     </div>
 
     <div class="tabs">

@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Faza 1: doar dispecerul (contul autorizat) citește/scrie datele de bază.
+// 3 documente cu ID fix (couriers/addresses/routes), fiecare cu array-ul/obiectul
+// complet — traducere directă a celor 3 chei localStorage folosite până acum.
+// Colecțiile courierRuns/stops vor primi reguli proprii în Fazele 2-5.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isDispatcher() {
+      return request.auth != null
+        && request.auth.token.email == 'alinaoprea99@gmail.com';
+    }
+
+    match /dispatcherData/{docId} {
+      allow read, write: if isDispatcher();
+    }
+  }
+}

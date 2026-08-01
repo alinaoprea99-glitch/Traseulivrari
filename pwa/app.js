@@ -43,73 +43,109 @@ document.addEventListener('DOMContentLoaded', () => {
   initRoutePanel();
   initActionBar();
   setDateStamp();
-  const hadSavedCouriers = loadCouriersFromStorage();
-  if (hadSavedCouriers){
-    renderCouriers();
-  } else {
-    addCourier(); // start with one courier by default
-  }
+  initAuthGate();
+  checkForIncomingCheckins();
+});
 
-  // Restore addresses/routes from the previous session — a page reload (e.g. to pick up
-  // an app update) should never lose a day's work in progress. Only the explicit
-  // "Resetează ..." actions clear these.
-  const hadSavedAddresses = loadAddressesFromStorage();
-  loadRoutesFromStorage();
-  if (hadSavedAddresses){
+const db = firebase.firestore();
+let firestoreSyncStarted = false;
+
+/**
+ * Gatekeeper before the dispatcher UI is usable: only the authorized dispatcher account
+ * (checked again server-side by firestore.rules, not just here) can read/write the shared
+ * data. Login state persists across reloads (Firebase Auth's own local persistence), so
+ * this only actually prompts once per browser until an explicit "Deconectare".
+ */
+function initAuthGate(){
+  const loginScreen = document.getElementById('loginScreen');
+  const appRoot = document.getElementById('appRoot');
+  const loginForm = document.getElementById('loginForm');
+  const loginError = document.getElementById('loginError');
+  const loginSubmitBtn = document.getElementById('loginSubmitBtn');
+
+  firebase.auth().onAuthStateChanged((user) => {
+    if (user){
+      loginScreen.style.display = 'none';
+      appRoot.style.display = '';
+      // The map was created (initMap, in DOMContentLoaded) while appRoot was still
+      // display:none — Leaflet measured a 0×0 container then, so it needs an explicit
+      // nudge now that the real layout is visible, or it stays blank/misrendered.
+      setTimeout(() => map && map.invalidateSize(), 0);
+      initFirestoreSync();
+    } else {
+      appRoot.style.display = 'none';
+      loginScreen.style.display = 'flex';
+    }
+  });
+
+  loginForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    loginError.style.display = 'none';
+    loginSubmitBtn.disabled = true;
+    loginSubmitBtn.textContent = 'Se conectează…';
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    firebase.auth().signInWithEmailAndPassword(email, password)
+      .catch(() => {
+        loginError.textContent = 'Email sau parolă greșite.';
+        loginError.style.display = 'block';
+      })
+      .finally(() => {
+        loginSubmitBtn.disabled = false;
+        loginSubmitBtn.textContent = 'Intră în cont';
+      });
+  });
+
+  document.getElementById('logoutBtn').addEventListener('click', () => {
+    firebase.auth().signOut();
+  });
+}
+
+/**
+ * Firestore replaces localStorage as the source of truth for couriers/addresses/routes —
+ * onSnapshot both loads the initial data AND keeps state live-synced afterward (across tabs,
+ * browsers, devices), superseding the old localStorage `storage`-event cross-tab sync.
+ * Each collection is still a single document holding the whole array/object (see
+ * save*ToStorage below) — matches how this data was already saved wholesale, not
+ * incrementally, so this is a direct swap of the storage backend, not a data-model change.
+ */
+function initFirestoreSync(){
+  if (firestoreSyncStarted) return; // onAuthStateChanged can fire more than once (e.g. token refresh)
+  firestoreSyncStarted = true;
+
+  let couriersLoadedOnce = false;
+  db.collection('dispatcherData').doc('couriers').onSnapshot((doc) => {
+    const data = doc.data();
+    if (data && Array.isArray(data.couriers) && data.couriers.length){
+      state.couriers = data.couriers;
+      state.nextCourierId = data.nextCourierId || (Math.max(...data.couriers.map(c => c.id)) + 1);
+    } else if (!couriersLoadedOnce){
+      addCourier(); // first-ever login for this project: seed one courier by default
+    }
+    couriersLoadedOnce = true;
+    renderCouriers();
+  }, (err) => console.error('Nu am putut sincroniza curierii', err));
+
+  let addressesLoadedOnce = false;
+  db.collection('dispatcherData').doc('addresses').onSnapshot((doc) => {
+    const data = doc.data();
+    state.addresses = (data && Array.isArray(data.addresses)) ? data.addresses : [];
+    state.nextAddrId = (data && data.nextAddrId) || (state.addresses.length ? Math.max(...state.addresses.map(a => a.id)) + 1 : 1);
     renderAddresses();
     renderCouriers();
     renderRouteSummary();
     maybeShowGeocodeButton();
     updateExportButtonsState();
     redrawMap();
-    fitMapToAll();
-  }
+    if (!addressesLoadedOnce && state.addresses.length) fitMapToAll(); // frame previous work once, on first load only — not on every later edit
+    addressesLoadedOnce = true;
+  }, (err) => console.error('Nu am putut sincroniza adresele', err));
 
-  checkForIncomingCheckins();
-  initCrossTabSync();
-});
-
-/**
- * Without this, having the app open in two tabs is dangerous: a stale tab (left open from
- * earlier, still holding an older/emptier in-memory state) re-saves that stale state to
- * localStorage on its NEXT render — triggered by something as small as a field blur —
- * silently overwriting whatever a different, more current tab had just saved. This is
- * exactly the "I refreshed and everything was gone" failure mode: the data WAS saved
- * correctly, then wiped out moments later by an unrelated idle tab.
- *
- * The fix: listen for the browser's `storage` event, which fires in every OTHER same-origin
- * tab whenever one tab changes localStorage (never in the tab that made the change itself).
- * The instant one tab saves, every other open tab immediately adopts that exact state —
- * so an idle tab is never more than one write behind, and can't clobber newer data with
- * stale data anymore. This does NOT solve two tabs being actively edited at the same time
- * (last write still wins there), only the far more common case of a forgotten idle tab.
- */
-function initCrossTabSync(){
-  window.addEventListener('storage', (e) => {
-    if (![COURIERS_STORAGE_KEY, ADDRESSES_STORAGE_KEY, ROUTES_STORAGE_KEY].includes(e.key)) return;
-    try {
-      if (e.key === COURIERS_STORAGE_KEY){
-        const data = e.newValue ? JSON.parse(e.newValue) : null;
-        state.couriers = (data && Array.isArray(data.couriers)) ? data.couriers : [];
-        state.nextCourierId = (data && data.nextCourierId) || 1;
-      } else if (e.key === ADDRESSES_STORAGE_KEY){
-        const data = e.newValue ? JSON.parse(e.newValue) : null;
-        state.addresses = (data && Array.isArray(data.addresses)) ? data.addresses : [];
-        state.nextAddrId = (data && data.nextAddrId) || 1;
-      } else if (e.key === ROUTES_STORAGE_KEY){
-        const data = e.newValue ? JSON.parse(e.newValue) : null;
-        state.routes = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
-      }
-      renderCouriers();
-      renderAddresses();
-      renderRouteSummary();
-      maybeShowGeocodeButton();
-      updateExportButtonsState();
-      redrawMap();
-    } catch (err){
-      console.error('Nu am putut sincroniza starea cu celălalt tab', err);
-    }
-  });
+  db.collection('dispatcherData').doc('routes').onSnapshot((doc) => {
+    state.routes = doc.exists ? doc.data() : {};
+    renderRouteSummary();
+    redrawMap();
+  }, (err) => console.error('Nu am putut sincroniza traseele', err));
 }
 
 // -------------------------------------------------------------------
@@ -280,88 +316,32 @@ function initCourierPanel(){
   });
 }
 
-// ---- Persistent work-in-progress (localStorage) ---------------------
-// Couriers, addresses AND routes are all saved across sessions/reloads now, so a browser
-// refresh (e.g. to pick up an app update) never loses a day's work in progress. Everything
-// only gets cleared by the explicit "Resetează ..." actions in the action bar — never by a
-// reload. save*ToStorage() piggybacks on the render*() functions that already run after
-// every mutation, so every call site that changes addresses/routes stays covered for free.
-const COURIERS_STORAGE_KEY = 'trasee-curieri:couriers';
-const ADDRESSES_STORAGE_KEY = 'trasee-curieri:addresses';
-const ROUTES_STORAGE_KEY = 'trasee-curieri:routes';
-
+// ---- Persistent work-in-progress (Firestore) -------------------------
+// Couriers, addresses AND routes are all saved to Firestore (dispatcherData/*, see
+// initFirestoreSync above) across sessions/reloads/devices, so a browser refresh (e.g. to
+// pick up an app update) never loses a day's work in progress. Everything only gets cleared
+// by the explicit "Resetează ..." actions in the action bar — never by a reload. save*ToStorage()
+// piggybacks on the render*() functions that already run after every mutation, so every call
+// site that changes addresses/routes stays covered for free. (Function names kept as
+// "...Storage" rather than renamed to "...Firestore" — same call sites, same purpose, only the
+// backend changed.)
 function saveCouriersToStorage(){
-  try {
-    localStorage.setItem(COURIERS_STORAGE_KEY, JSON.stringify({
-      couriers: state.couriers,
-      nextCourierId: state.nextCourierId
-    }));
-  } catch (e){
-    console.error('Could not save couriers', e);
-  }
-}
-
-function loadCouriersFromStorage(){
-  try {
-    const raw = localStorage.getItem(COURIERS_STORAGE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.couriers) || !data.couriers.length) return false;
-    state.couriers = data.couriers;
-    state.nextCourierId = data.nextCourierId || (Math.max(...data.couriers.map(c => c.id)) + 1);
-    return true;
-  } catch (e){
-    console.error('Could not load couriers', e);
-    return false;
-  }
+  db.collection('dispatcherData').doc('couriers').set({
+    couriers: state.couriers,
+    nextCourierId: state.nextCourierId
+  }).catch(e => console.error('Could not save couriers', e));
 }
 
 function saveAddressesToStorage(){
-  try {
-    localStorage.setItem(ADDRESSES_STORAGE_KEY, JSON.stringify({
-      addresses: state.addresses,
-      nextAddrId: state.nextAddrId
-    }));
-  } catch (e){
-    console.error('Could not save addresses', e);
-  }
-}
-
-function loadAddressesFromStorage(){
-  try {
-    const raw = localStorage.getItem(ADDRESSES_STORAGE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.addresses) || !data.addresses.length) return false;
-    state.addresses = data.addresses;
-    state.nextAddrId = data.nextAddrId || (Math.max(...data.addresses.map(a => a.id)) + 1);
-    return true;
-  } catch (e){
-    console.error('Could not load addresses', e);
-    return false;
-  }
+  db.collection('dispatcherData').doc('addresses').set({
+    addresses: state.addresses,
+    nextAddrId: state.nextAddrId
+  }).catch(e => console.error('Could not save addresses', e));
 }
 
 function saveRoutesToStorage(){
-  try {
-    localStorage.setItem(ROUTES_STORAGE_KEY, JSON.stringify(state.routes));
-  } catch (e){
-    console.error('Could not save routes', e);
-  }
-}
-
-function loadRoutesFromStorage(){
-  try {
-    const raw = localStorage.getItem(ROUTES_STORAGE_KEY);
-    if (!raw) return false;
-    const data = JSON.parse(raw);
-    if (!data || typeof data !== 'object' || Array.isArray(data) || !Object.keys(data).length) return false;
-    state.routes = data;
-    return true;
-  } catch (e){
-    console.error('Could not load routes', e);
-    return false;
-  }
+  db.collection('dispatcherData').doc('routes').set(state.routes)
+    .catch(e => console.error('Could not save routes', e));
 }
 
 function addCourier(){
@@ -3662,6 +3642,10 @@ function loadStateFromFile(file){
       state.routes = (data.routes && typeof data.routes === 'object' && !Array.isArray(data.routes)) ? data.routes : {};
       state.routeSelection.clear();
 
+      saveCouriersToStorage();
+      saveAddressesToStorage();
+      saveRoutesToStorage();
+
       renderCouriers();
       renderAddresses();
       renderRouteSummary();
@@ -3696,12 +3680,10 @@ function initActionBar(){
     state.nextCourierId = 1;
     state.nextAddrId = 1;
     state.routeSelection.clear();
-    try {
-      localStorage.removeItem(COURIERS_STORAGE_KEY);
-      localStorage.removeItem(ADDRESSES_STORAGE_KEY);
-      localStorage.removeItem(ROUTES_STORAGE_KEY);
-    } catch (e){ console.error(e); }
     addCourier();
+    saveCouriersToStorage();
+    saveAddressesToStorage();
+    saveRoutesToStorage();
     renderAddresses();
     renderRouteSummary();
     redrawMap();
@@ -3718,8 +3700,10 @@ function initActionBar(){
     state.addresses.forEach(a => { a.courierId = null; a.manuallyAssigned = false; });
     state.routes = {};
     state.routeSelection.clear();
-    try { localStorage.removeItem(COURIERS_STORAGE_KEY); } catch (e){ console.error(e); }
     addCourier();
+    saveCouriersToStorage();
+    saveAddressesToStorage(); // courierId/manuallyAssigned changed on every address above
+    saveRoutesToStorage();
     renderAddresses();
     renderRouteSummary();
     redrawMap();
@@ -3733,10 +3717,8 @@ function initActionBar(){
     state.nextAddrId = 1;
     state.routes = {};
     state.routeSelection.clear();
-    try {
-      localStorage.removeItem(ADDRESSES_STORAGE_KEY);
-      localStorage.removeItem(ROUTES_STORAGE_KEY);
-    } catch (e){ console.error(e); }
+    saveAddressesToStorage();
+    saveRoutesToStorage();
     renderAddresses();
     renderCouriers();
     renderRouteSummary();
@@ -3755,7 +3737,8 @@ function initActionBar(){
     state.routes = {};
     state.routeSelection.clear();
     state.addresses.forEach(a => { a.courierId = null; a.manuallyAssigned = false; });
-    try { localStorage.removeItem(ROUTES_STORAGE_KEY); } catch (e){ console.error(e); }
+    saveAddressesToStorage(); // courierId/manuallyAssigned changed on every address above
+    saveRoutesToStorage();
     renderAddresses();
     renderCouriers();
     renderRouteSummary();

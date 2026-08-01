@@ -10,6 +10,7 @@ const APP_SHELL = [
   './app.js',
   './curier.html',
   './curier.js',
+  './firebase-config.js',
   './manifest.webmanifest'
 ];
 
