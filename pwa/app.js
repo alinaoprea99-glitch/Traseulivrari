@@ -3125,12 +3125,15 @@ function appBaseUrl(){
   return location.href.split('#')[0].replace(/index\.html?$/i, '').replace(/\/?$/, '/');
 }
 
-function buildTrackingLink(stopId){
-  return `${appBaseUrl()}tracking.html?s=${stopId}`;
-}
-
-function buildHistoryLink(clientId){
-  return `${appBaseUrl()}istoric.html?c=${clientId}`;
+/**
+ * One single, permanent link per client (matched by phone — see resolveClientId), sent every
+ * time regardless of how many orders they've placed. tracking.html?c={clientId} shows the
+ * current/latest order live (map, ETA, confirm/note) AND the full order history below it on
+ * the same page — a client used to get two separate links (live tracking + history) and found
+ * that confusing, so now there's exactly one.
+ */
+function buildClientLink(clientId){
+  return `${appBaseUrl()}tracking.html?c=${clientId}`;
 }
 
 /**
@@ -4018,11 +4021,10 @@ function formatWindowForMessage(win){
   return `${win.windowStart.replace(':', '.')} - ${win.windowEnd.replace(':', '.')}`;
 }
 
-function buildDeliveryMessage(name, dayPhrase, windowText, trackingLink, historyLink){
+function buildDeliveryMessage(name, dayPhrase, windowText, clientLink){
   const greeting = name ? `Buna ${name},` : 'Buna,';
-  const trackingLine = trackingLink ? `\n\n📍 Click aici sa confirmi si sa urmaresti livrarea in timp real:\n${trackingLink}` : '';
-  const historyLine = historyLink ? `\n\n🧾 Istoricul comenzilor tale, mereu la acest link:\n${historyLink}` : '';
-  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${trackingLine}${historyLine}\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
+  const linkLine = clientLink ? `\n\n📍 Click aici sa confirmi, sa urmaresti livrarea in timp real si sa vezi istoricul comenzilor:\n${clientLink}` : '';
+  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${linkLine}\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 
 /** All non-cancelled stops that are part of a generated route and have a computed delivery window. */
@@ -4097,8 +4099,7 @@ async function showGenerateMessagesModal(){
   function renderRow(stop){
     const { addr, win, route } = stop;
     const windowText = formatWindowForMessage(win);
-    const trackingLink = buildTrackingLink(route.stopIds[addr.id]);
-    const historyLink = route.clientIds && route.clientIds[addr.id] ? buildHistoryLink(route.clientIds[addr.id]) : '';
+    const clientLink = route.clientIds && route.clientIds[addr.id] ? buildClientLink(route.clientIds[addr.id]) : '';
     const row = document.createElement('div');
     row.className = 'gm-row';
     row.innerHTML = `
@@ -4112,7 +4113,7 @@ async function showGenerateMessagesModal(){
     `;
     const preview = row.querySelector('.gm-preview');
     const updatePreview = () => {
-      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText, trackingLink, historyLink);
+      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText, clientLink);
     };
     row.querySelector('.gm-name-input').addEventListener('input', (e) => {
       addr.greetingNameOverride = e.target.value.trim();
@@ -4133,8 +4134,7 @@ async function showGenerateMessagesModal(){
       phone: normalizePhoneForMessages(addr.phone),
       message: buildDeliveryMessage(
         getGreetingFirstName(addr), dayPhrase, formatWindowForMessage(win),
-        buildTrackingLink(route.stopIds[addr.id]),
-        route.clientIds && route.clientIds[addr.id] ? buildHistoryLink(route.clientIds[addr.id]) : ''
+        route.clientIds && route.clientIds[addr.id] ? buildClientLink(route.clientIds[addr.id]) : ''
       )
     }));
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });

@@ -1,18 +1,28 @@
 // ===================================================================
-// Urmărire livrare — pagina clientului.
-// O singură pagină, fără taburi (spre deosebire de curier.html) — un
-// client are o singură oprire de urmărit, nu un traseu întreg. Citește
-// stops/{stopId} (vezi app.js ensureCourierRun / firestore.rules) —
-// un document restrâns deliberat, care conține STRICT datele acestui
-// client, niciodată alți clienți sau traseul complet. Poziția curierului
-// și statusul ajung aici prin functions/index.js (syncCourierRunToStops),
-// nu direct de la curier.
+// Urmărire livrare + istoric — pagina clientului.
+// UN SINGUR link, permanent, per client (tracking.html?c={clientId} —
+// vezi app.js resolveClientId/ensureCourierRun, potrivit după telefon).
+// Arată comanda curentă/cea mai recentă LIVE (hartă, ETA, confirmare,
+// observație) în partea de sus, și istoricul comenzilor anterioare
+// dedesubt, pe aceeași pagină — un client primea inițial două linkuri
+// separate (urmărire + istoric) și a fost confuz, deci acum e unul
+// singur. clients/{clientId} doar ține o listă de stopId-uri (vezi
+// firestore.rules) — fiecare comandă (curentă sau trecută) e citită din
+// stops/{stopId}, un document restrâns deliberat: STRICT datele acestui
+// client, niciodată alți clienți sau traseul complet.
 // ===================================================================
 
 const db = firebase.firestore();
-let currentStopId = null;
-let stopData = null;
-let loadingStop = true;
+let currentClientId = null;
+let loadingClient = true;
+let clientNotFound = false;
+
+let currentStopId = null;   // ultimul stopId din clients/{id}.stopIds — comanda curentă/cea mai recentă
+let stopData = null;        // datele live ale comenzii curente (stops/{currentStopId})
+let currentStopUnsub = null;
+
+let historyStopIds = [];    // toate stopId-urile în afară de cel curent, cele mai noi primele
+const historyCache = {};    // stopId -> date (fetch o singură dată per id — o comandă trecută e stabilă)
 
 function escapeHtml(str){
   const div = document.createElement('div');
@@ -20,7 +30,7 @@ function escapeHtml(str){
   return div.innerHTML;
 }
 
-/** Mirrors app.js/curier.js's formatProductsWithKg, reading straight off the stops doc's fields. */
+/** Mirrors app.js/curier.js's formatProductsWithKg, reading straight off a stops doc's fields. */
 function formatProductsWithKg(data){
   if (!data.products) return '';
   if (data.productsKg == null) return escapeHtml(data.products);
@@ -40,6 +50,14 @@ function timeAgo(iso){
   if (min < 60) return `acum ${min} min`;
   const h = Math.round(min / 60);
   return `acum ${h} ${h === 1 ? 'oră' : 'ore'}`;
+}
+
+const LUNI_RO = ['ianuarie', 'februarie', 'martie', 'aprilie', 'mai', 'iunie', 'iulie', 'august', 'septembrie', 'octombrie', 'noiembrie', 'decembrie'];
+function formatDateRo(dateStr){
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return dateStr;
+  return `${d} ${LUNI_RO[m - 1]} ${y}`;
 }
 
 const ICONS = {
@@ -206,7 +224,7 @@ function updateStatusCard(data){
   card.innerHTML = html;
 }
 
-/** Writes directly to stops/{stopId} — firestore.rules allows the client to update only clientConfirmed/clientNote here. */
+/** Writes directly to stops/{currentStopId} — firestore.rules allows the client to update only clientConfirmed/clientNote here. */
 function updateStopField(fields){
   if (!currentStopId) return;
   db.collection('stops').doc(currentStopId).update(fields)
@@ -243,13 +261,49 @@ function wireActions(){
   }
 }
 
+function historyStatusBadge(status){
+  if (status === 'delivered') return { cls: 'delivered', label: 'Livrată' };
+  if (status === 'failed') return { cls: 'failed', label: 'Nelivrată' };
+  return { cls: 'pending', label: 'În curs' };
+}
+
+function historyOrderCardHtml(stop){
+  const { cls, label } = historyStatusBadge(stop.status);
+  const paymentText = (stop.amount != null || stop.payment)
+    ? `${stop.amount != null ? Number(stop.amount).toFixed(2) + ' lei' : ''}${stop.amount != null && stop.payment ? ' · ' : ''}${escapeHtml(stop.payment || '')}`
+    : '';
+  const windowText = stop.winStart ? ` · interval ${escapeHtml(stop.winStart)}` : '';
+  return `
+    <div class="order-card">
+      <div class="order-card-top">
+        <div class="order-date">${escapeHtml(formatDateRo(stop.date))}</div>
+        <span class="order-badge ${cls}">${label}</span>
+      </div>
+      ${stop.products ? `<div class="order-products">${formatProductsWithKg(stop)}</div>` : ''}
+      ${paymentText || windowText ? `<div class="order-meta">${paymentText}${windowText}</div>` : ''}
+    </div>
+  `;
+}
+
+/** Previous orders only (the current one is already shown in full above) — empty string if this is the client's first order. */
+function historySectionHtml(){
+  const cards = historyStopIds.map(id => historyCache[id]).filter(Boolean);
+  if (!cards.length) return '';
+  return `
+    <div class="section-label">Comenzi anterioare</div>
+    ${cards.map(historyOrderCardHtml).join('')}
+  `;
+}
+
 /**
- * Built ONCE, the first time a stop loads — order details (name/address/products/window) never
- * change after the dispatcher creates the run, and clientConfirmed/clientNote are only ever
- * written by this same client (the Cloud Function that syncs courier position/status back never
+ * Built ONCE per current order — order details (name/address/products/window) never change
+ * after the dispatcher creates the run, and clientConfirmed/clientNote are only ever written
+ * by this same client (the Cloud Function that syncs courier position/status back never
  * touches them — see functions/index.js), so rebuilding this on every ~15s position ping would
  * only risk interrupting someone mid-typing in the note box for no reason. Only the status card
  * (built separately, see updateStatusCard) and the map need to react to those frequent updates.
+ * Rebuilt (contentBuilt reset to false) whenever currentStopId itself changes — see
+ * handleStopIdsChange — which also covers the history list below it changing.
  */
 function shellHtml(data){
   const { statusClass, html: statusInner } = buildStatusCardInner(data);
@@ -281,6 +335,8 @@ function shellHtml(data){
         </div>
       </div>
 
+      ${historySectionHtml()}
+
       <div class="foot-note">Crăița Merelor — cu tradiție din Voinești!</div>
     </div>
   `;
@@ -292,18 +348,31 @@ function render(){
   const root = document.getElementById('root');
   const mapWrap = document.getElementById('mapWrap');
 
-  if (!stopData){
+  const stillLoadingCurrentStop = !clientNotFound && currentStopId && !stopData;
+  if (loadingClient || stillLoadingCurrentStop){
     mapWrap.style.display = 'none';
     contentBuilt = false;
-    root.innerHTML = loadingStop ? `
+    root.innerHTML = `
       <div class="empty-state">
         <div class="es-icon">${ICONS.clock}</div>
         <div class="es-title">Se încarcă…</div>
-      </div>` : `
+      </div>`;
+    return;
+  }
+
+  if (clientNotFound || !currentStopId){
+    mapWrap.style.display = 'none';
+    contentBuilt = false;
+    root.innerHTML = clientNotFound ? `
       <div class="empty-state">
         <div class="es-icon">${ICONS.warn}</div>
         <div class="es-title">Link invalid</div>
-        <div class="es-sub">Acest link de urmărire nu mai este valabil. Contactează-ne dacă ai nevoie de ajutor.</div>
+        <div class="es-sub">Acest link nu mai este valabil. Contactează-ne dacă ai nevoie de ajutor.</div>
+      </div>` : `
+      <div class="empty-state">
+        <div class="es-icon">${ICONS.clock}</div>
+        <div class="es-title">Nicio comandă încă</div>
+        <div class="es-sub">Comenzile tale vor apărea aici pe măsură ce le plasezi.</div>
       </div>`;
     return;
   }
@@ -324,34 +393,84 @@ function render(){
 // Keeps "actualizat acum X min" fresh even between snapshots (courier may be stationary for a while).
 setInterval(() => { if (stopData) updateStatusCard(stopData); }, 30000);
 
-function initTracking(){
-  currentStopId = new URLSearchParams(location.search).get('s');
+/** Fetches (and caches) every history stop not already loaded — a past order's data is stable, so each stopId is only ever fetched once. */
+async function loadHistoryStops(ids){
+  const missing = ids.filter(id => !historyCache[id]);
+  if (!missing.length) return;
+  try {
+    const docs = await Promise.all(missing.map(id => db.collection('stops').doc(id).get()));
+    docs.forEach((doc, i) => { if (doc.exists) historyCache[missing[i]] = doc.data(); });
+  } catch (e){
+    console.error('Nu am putut încărca istoricul comenzilor', e);
+  }
+}
+
+/**
+ * Reacts to clients/{clientId}.stopIds changing (a new order placed, possibly while this page
+ * is already open) — the LAST id is always the current/most recent order (arrayUnion only
+ * appends, see app.js ensureCourierRun), everything before it is history. Re-subscribes the
+ * live per-stop listener only when the current stop id actually changes, so an unrelated
+ * history-list refresh never interrupts the live view.
+ */
+async function handleStopIdsChange(stopIds){
+  const newCurrentId = stopIds.length ? stopIds[stopIds.length - 1] : null;
+  historyStopIds = stopIds.slice(0, -1).reverse();
+  await loadHistoryStops(historyStopIds);
+
+  if (newCurrentId === currentStopId){
+    render();
+    return;
+  }
+
+  if (currentStopUnsub){ currentStopUnsub(); currentStopUnsub = null; }
+  currentStopId = newCurrentId;
+  stopData = null;
+  contentBuilt = false;
+
   if (!currentStopId){
-    loadingStop = false;
+    render();
+    return;
+  }
+  currentStopUnsub = db.collection('stops').doc(currentStopId).onSnapshot(
+    (doc) => { stopData = doc.exists ? doc.data() : null; render(); },
+    (err) => { console.error('Nu am putut încărca urmărirea livrării', err); stopData = null; render(); }
+  );
+}
+
+function initTracking(){
+  currentClientId = new URLSearchParams(location.search).get('c');
+  if (!currentClientId){
+    loadingClient = false;
+    clientNotFound = true;
     render();
     return;
   }
   firebase.auth().setPersistence(firebase.auth.Auth.Persistence.SESSION)
     .then(() => firebase.auth().signInAnonymously())
     .then(() => {
-      db.collection('stops').doc(currentStopId).onSnapshot(
+      db.collection('clients').doc(currentClientId).onSnapshot(
         (doc) => {
-          loadingStop = false;
-          stopData = doc.exists ? doc.data() : null;
-          render();
+          loadingClient = false;
+          if (!doc.exists){
+            clientNotFound = true;
+            render();
+            return;
+          }
+          clientNotFound = false;
+          handleStopIdsChange(doc.data().stopIds || []);
         },
         (err) => {
-          console.error('Nu am putut încărca urmărirea livrării', err);
-          loadingStop = false;
-          stopData = null;
+          console.error('Nu am putut încărca istoricul comenzilor', err);
+          loadingClient = false;
+          clientNotFound = true;
           render();
         }
       );
     })
     .catch((err) => {
       console.error('Autentificare anonimă eșuată', err);
-      loadingStop = false;
-      stopData = null;
+      loadingClient = false;
+      clientNotFound = true;
       render();
     });
 }
