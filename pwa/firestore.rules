@@ -61,5 +61,18 @@ service cloud.firestore {
       allow create, update: if isDispatcher();
       allow delete: if false;
     }
+
+    // Link permanent per curier — instalat o singură dată pe telefon (curier.html?courier={id}),
+    // ține doar un "pointer" către traseul curent (currentRunId), actualizat de dispecer de
+    // fiecare dată când generează traseul zilei (vezi app.js ensureCourierRun). Curierul
+    // ascultă live acest document — nu mai are nevoie de un link nou în fiecare zi. ID-ul e
+    // generat de dispecer (Firestore auto-ID, negăsibil) — NU numărul mic 1/2/3 al curierului,
+    // care ar fi ghicibil și ar expune traseul altui curier.
+    match /courierLinks/{linkId} {
+      allow get: if request.auth != null;
+      allow list: if false;
+      allow create, update: if isDispatcher();
+      allow delete: if false;
+    }
   }
 }

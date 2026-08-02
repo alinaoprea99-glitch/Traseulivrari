@@ -3210,6 +3210,11 @@ function buildCourierRunStops(route, stopRefs){
 async function ensureCourierRun(courier, route){
   if (route.courierRunId && route.stopIds) return route.courierRunId;
 
+  // Generated once per courier, then kept forever (persisted via saveCouriersToStorage below) —
+  // this is what makes curier.html?courier={id} a permanent, install-once link: the SAME id is
+  // reused every day, only its courierLinks/{id}.currentRunId pointer changes.
+  if (!courier.persistentId) courier.persistentId = db.collection('courierLinks').doc().id;
+
   const today = new Date().toISOString().slice(0, 10);
   const runRef = db.collection('courierRuns').doc();
   const stopRefs = {};
@@ -3280,6 +3285,11 @@ async function ensureCourierRun(courier, route){
       batch.set(db.collection('clients').doc(lookup.id), update, { merge: true });
     }
   });
+  batch.set(db.collection('courierLinks').doc(courier.persistentId), {
+    courierId: courier.id,
+    currentRunId: runRef.id,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }, { merge: true });
   await batch.commit();
 
   route.courierRunId = runRef.id;
@@ -3290,14 +3300,20 @@ async function ensureCourierRun(courier, route){
     if (clientLookups[addrId]) route.clientIds[addrId] = clientLookups[addrId].id;
   });
   saveRoutesToStorage();
+  saveCouriersToStorage(); // persists courier.persistentId if it was just generated above
   syncCourierRunListeners();
   return runRef.id;
 }
 
-/** Returns the courier's link (curier.html?run=...), creating the underlying run if needed. */
+/** Returns the courier's daily link (curier.html?run=...), creating the underlying run if needed. */
 async function createCourierRun(courier, route){
   await ensureCourierRun(courier, route);
   return `${appBaseUrl()}curier.html?run=${route.courierRunId}`;
+}
+
+/** The courier's permanent, install-once link — same URL every day, see ensureCourierRun/courierLinks. */
+function buildCourierPersistentLink(persistentId){
+  return `${appBaseUrl()}curier.html?courier=${persistentId}`;
 }
 
 /** Flags setups where the generated link can't actually be opened from a different phone. */
@@ -3403,7 +3419,17 @@ async function showSendToCourierModal(courierId){
         <button class="btn btn-sm" id="copyCourierLinkBtn">Copiază</button>
       </div>
       <button class="btn btn-accent btn-sm btn-block" id="waCourierLinkBtn" style="margin-top:10px;" disabled>Trimite pe WhatsApp</button>
-      <button class="btn btn-ghost btn-sm btn-block" id="closeCourierModalBtn" style="margin-top:8px;">Închide</button>
+
+      <div style="border-top:1px solid var(--line); margin:16px 0 12px;"></div>
+      <div class="modal-title" style="font-size:14px;">Link permanent — instalează o singură dată</div>
+      <div class="hint" style="margin-bottom:4px;">Curierul deschide acest link O SINGURĂ DATĂ, în Safari (pe iPhone) sau Chrome (pe Android), și îl adaugă pe ecranul principal. De atunci încolo, aplicația instalată arată automat traseul zilei — nu mai trimiți niciun link nou.</div>
+      <div class="link-copy-row" id="persistentLinkCopyRow" style="display:none; margin-top:8px;">
+        <input type="text" id="persistentLinkInput" readonly value="">
+        <button class="btn btn-sm" id="copyPersistentLinkBtn">Copiază</button>
+      </div>
+      <button class="btn btn-accent btn-sm btn-block" id="waPersistentLinkBtn" style="margin-top:10px;" disabled>Trimite pe WhatsApp</button>
+
+      <button class="btn btn-ghost btn-sm btn-block" id="closeCourierModalBtn" style="margin-top:14px;">Închide</button>
     </div>
   `;
   document.body.appendChild(overlay);
@@ -3430,6 +3456,12 @@ async function showSendToCourierModal(courierId){
   const waBtn = document.getElementById('waCourierLinkBtn');
   waBtn.disabled = false;
 
+  const persistentLink = buildCourierPersistentLink(courier.persistentId);
+  document.getElementById('persistentLinkCopyRow').style.display = 'flex';
+  document.getElementById('persistentLinkInput').value = persistentLink;
+  const waPersistentBtn = document.getElementById('waPersistentLinkBtn');
+  waPersistentBtn.disabled = false;
+
   const qrWrap = document.getElementById('courierQrWrap');
   try {
     const qr = qrcode(0, 'L'); // typeNumber 0 = auto-pick smallest version that fits the data
@@ -3440,6 +3472,22 @@ async function showSendToCourierModal(courierId){
     console.error('QR generation failed', e);
     qrWrap.innerHTML = `<div class="hint">Nu am putut genera codul QR — folosește link-ul de mai jos.</div>`;
   }
+
+  document.getElementById('copyPersistentLinkBtn').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(persistentLink);
+    } catch (e){
+      const input = document.getElementById('persistentLinkInput');
+      input.select();
+      document.execCommand('copy');
+    }
+    showToast('Link permanent copiat.');
+  });
+
+  waPersistentBtn.addEventListener('click', () => {
+    const text = encodeURIComponent(`Link permanent pentru traseele tale (${courier.name}) — deschide-l o singură dată în Safari/Chrome și adaugă-l pe ecranul principal:\n${persistentLink}`);
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  });
 
   document.getElementById('copyCourierLinkBtn').addEventListener('click', async () => {
     try {

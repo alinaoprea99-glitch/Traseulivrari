@@ -82,22 +82,68 @@ function updateStopField(stopId, fields){
 }
 
 const LAST_RUN_STORAGE_KEY = 'curier-last-run';
+const PERSISTENT_ID_STORAGE_KEY = 'curier-persistent-id';
 
+let runUnsub = null;
+
+/** Subscribes to courierRuns/{runId} live — re-subscribes only if the id actually changed, so the persistent-link pointer advancing to a new day's run doesn't leave a stale listener behind. */
+function subscribeToRun(runId){
+  if (runUnsub && runId === currentRunId) return;
+  if (runUnsub){ runUnsub(); runUnsub = null; }
+  currentRunId = runId;
+  runUnsub = db.collection('courierRuns').doc(runId).onSnapshot(
+    (doc) => {
+      loadingRun = false;
+      if (!doc.exists){
+        payload = null;
+        render();
+        return;
+      }
+      try { localStorage.setItem(LAST_RUN_STORAGE_KEY, runId); } catch (e){}
+      applyRunSnapshot(runId, doc.data());
+    },
+    (err) => {
+      console.error('Nu am putut încărca traseul', err);
+      loadingRun = false;
+      payload = null;
+      render();
+    }
+  );
+}
+
+/**
+ * Two ways in: a permanent per-courier link (?courier={id}, see app.js ensureCourierRun/
+ * courierLinks — a live pointer to whatever run the dispatcher most recently sent this
+ * courier, so ONE install keeps following every future day automatically) or the older
+ * one-day link (?run={runId}). Either way, opening with NO query param at all — the normal
+ * case once installed, since the manifest's fixed start_url can't carry one — falls back to
+ * whichever was saved to localStorage the last time a real link was actually opened, with the
+ * permanent id preferred since it stays live going forward instead of freezing on one day.
+ */
 function initCourierRun(){
-  currentRunId = new URLSearchParams(location.search).get('run');
-  if (!currentRunId){
-    // Opened with no ?run= — most likely relaunched from the installed home-screen icon,
-    // whose manifest start_url can't carry a per-day query param. Fall back to whichever
-    // run was last successfully opened via a real link, so one install keeps working day
-    // after day without having to dig the WhatsApp link back out each morning.
-    try { currentRunId = localStorage.getItem(LAST_RUN_STORAGE_KEY); } catch (e){}
+  const params = new URLSearchParams(location.search);
+  let persistentId = params.get('courier');
+  let runId = params.get('run');
+
+  if (persistentId){
+    try { localStorage.setItem(PERSISTENT_ID_STORAGE_KEY, persistentId); } catch (e){}
+  } else if (!runId){
+    // Opened with no query param at all — the normal case once installed, since the manifest's
+    // fixed start_url can't carry one. Prefer a saved permanent id (keeps following every future
+    // day live) over a saved one-day run id (frozen on whichever day it was last opened).
+    try { persistentId = localStorage.getItem(PERSISTENT_ID_STORAGE_KEY); } catch (e){}
+    if (!persistentId){
+      try { runId = localStorage.getItem(LAST_RUN_STORAGE_KEY); } catch (e){}
+    }
   }
-  if (!currentRunId){
+
+  if (!persistentId && !runId){
     loadingRun = false;
     payload = null;
     render();
     return;
   }
+
   // SESSION persistence (tab-scoped, not shared via IndexedDB/localStorage) — curier.html
   // and index.html are the same origin, so with the default LOCAL persistence, a courier
   // link opened in the same browser as the dispatcher would silently sign the dispatcher
@@ -105,24 +151,23 @@ function initCourierRun(){
   firebase.auth().setPersistence(firebase.auth.Auth.Persistence.SESSION)
     .then(() => firebase.auth().signInAnonymously())
     .then(() => {
-      db.collection('courierRuns').doc(currentRunId).onSnapshot(
-        (doc) => {
-          loadingRun = false;
-          if (!doc.exists){
+      if (persistentId){
+        db.collection('courierLinks').doc(persistentId).onSnapshot(
+          (doc) => {
+            const activeRunId = doc.exists ? doc.data().currentRunId : null;
+            if (activeRunId) subscribeToRun(activeRunId);
+            else { loadingRun = false; payload = null; render(); }
+          },
+          (err) => {
+            console.error('Nu am putut încărca linkul permanent', err);
+            loadingRun = false;
             payload = null;
             render();
-            return;
           }
-          try { localStorage.setItem(LAST_RUN_STORAGE_KEY, currentRunId); } catch (e){}
-          applyRunSnapshot(currentRunId, doc.data());
-        },
-        (err) => {
-          console.error('Nu am putut încărca traseul', err);
-          loadingRun = false;
-          payload = null;
-          render();
-        }
-      );
+        );
+        return;
+      }
+      subscribeToRun(runId);
     })
     .catch((err) => {
       console.error('Autentificare anonimă eșuată', err);
