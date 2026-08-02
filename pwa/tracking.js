@@ -289,11 +289,12 @@ function historyOrderCardHtml(stop){
   `;
 }
 
-/** Previous orders only (the current one is already shown in full above) — empty string if this is the client's first order. */
+/** Previous orders only (the current one is already shown in full above), capped to the MAX_HISTORY_ENTRIES most recent — empty string if this is the client's first order. */
 function historySectionInnerHtml(){
   const cards = historyStopIds.map(id => historyCache[id]).filter(Boolean);
   if (!cards.length) return '';
-  return `<div class="section-label">Comenzi anterioare</div>${cards.map(historyOrderCardHtml).join('')}`;
+  const label = historyTruncated ? `Ultimele ${MAX_HISTORY_ENTRIES} comenzi anterioare` : 'Comenzi anterioare';
+  return `<div class="section-label">${label}</div>${cards.map(historyOrderCardHtml).join('')}`;
 }
 
 /**
@@ -415,10 +416,12 @@ setInterval(() => { if (stopData) updateStatusCard(stopData); }, 30000);
 // "history" (a newer order became current) isn't necessarily finished yet, and even a
 // delivered/failed mark can be undone by the courier (curier.js's data-mark toggle), so a
 // cached snapshot would go silently stale — exactly the bug reported: an order stayed "În
-// curs" in the history list after the courier had actually marked it delivered. Once
-// subscribed, a stopId is never unsubscribed (historyStopIds only ever grows — arrayUnion
-// always appends), so this is a handful of listeners for the page's lifetime, not a leak.
+// curs" in the history list after the courier had actually marked it delivered. Capped to the
+// MAX_HISTORY_ENTRIES most recent (see handleStopIdsChange) — a client with a long order
+// history shouldn't get a live listener (or a wall of cards) per order ever placed.
+const MAX_HISTORY_ENTRIES = 5;
 const historyUnsubs = {};
+let historyTruncated = false;
 
 function subscribeHistoryStop(id){
   if (historyUnsubs[id]) return;
@@ -431,6 +434,10 @@ function subscribeHistoryStop(id){
   );
 }
 
+function unsubscribeHistoryStop(id){
+  if (historyUnsubs[id]){ historyUnsubs[id](); delete historyUnsubs[id]; }
+}
+
 /**
  * Reacts to clients/{clientId}.stopIds changing (a new order placed, possibly while this page
  * is already open) — the LAST id is always the current/most recent order (arrayUnion only
@@ -440,7 +447,11 @@ function subscribeHistoryStop(id){
  */
 function handleStopIdsChange(stopIds){
   const newCurrentId = stopIds.length ? stopIds[stopIds.length - 1] : null;
-  historyStopIds = stopIds.slice(0, -1).reverse();
+  const allHistoryIds = stopIds.slice(0, -1).reverse();
+  historyStopIds = allHistoryIds.slice(0, MAX_HISTORY_ENTRIES);
+  historyTruncated = allHistoryIds.length > MAX_HISTORY_ENTRIES;
+
+  Object.keys(historyUnsubs).forEach(id => { if (!historyStopIds.includes(id)) unsubscribeHistoryStop(id); });
   historyStopIds.forEach(subscribeHistoryStop);
   updateHistorySection();
 
