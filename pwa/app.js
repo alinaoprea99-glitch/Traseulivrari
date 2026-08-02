@@ -2763,12 +2763,18 @@ async function recomputeRouteFixedOrder(courier, route){
  */
 function syncRouteToCourierIfSent(courierId){
   const route = state.routes[courierId];
+  // Silent on purpose: no route sent yet for this courier, nothing to sync — NOT a diagnostic
+  // gap, this is the common/expected case for a route never yet shared.
   if (!route || !route.courierRunId) return;
   const courier = state.couriers.find(c => c.id === courierId);
   if (!courier) return;
-  ensureCourierRun(courier, route).catch(e => {
-    console.error('Nu am putut sincroniza traseul cu curierul', e);
-    showToast('Nu am putut trimite modificarea către curier — verifică conexiunea.', true);
+  console.log('[sync-curier] pornesc resincronizarea', { courierId, courierRunId: route.courierRunId, order: route.order.slice() });
+  ensureCourierRun(courier, route).then(() => {
+    console.log('[sync-curier] resincronizare reușită', { courierId, courierRunId: route.courierRunId });
+    showToast(`Modificarea a fost trimisă către ${courier.name}.`);
+  }).catch(e => {
+    console.error('[sync-curier] resincronizare EȘUATĂ', e);
+    showToast(`Nu am putut trimite modificarea către ${courier.name} — ${e.message || 'verifică conexiunea'}.`, true);
   });
 }
 
