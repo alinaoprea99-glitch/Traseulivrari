@@ -187,6 +187,9 @@ function buildStatusCardInner(data){
     statusClass = 'failed'; icon = ICONS.x;
     title = 'Livrarea nu s-a putut finaliza';
     sub = 'Te vom contacta pentru a stabili o nouă livrare.';
+  } else if (status === 'cancelled'){
+    statusClass = 'failed'; icon = ICONS.x;
+    title = 'Comanda a fost anulată';
   } else {
     const ahead = data.stopsAhead || 0;
     if (ahead <= 0){
@@ -264,6 +267,7 @@ function wireActions(){
 function historyStatusBadge(status){
   if (status === 'delivered') return { cls: 'delivered', label: 'Livrată' };
   if (status === 'failed') return { cls: 'failed', label: 'Nelivrată' };
+  if (status === 'cancelled') return { cls: 'failed', label: 'Anulată' };
   return { cls: 'pending', label: 'În curs' };
 }
 

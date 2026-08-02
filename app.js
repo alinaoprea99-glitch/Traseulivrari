@@ -3200,43 +3200,53 @@ function buildCourierRunStops(route, stopRefs){
 }
 
 /**
- * Creates (once per route) the courierRuns doc AND, alongside it in the same batch, one public
- * stops/{stopId} doc per address — the deliberately narrow client-facing view (see
- * firestore.rules), containing only that one client's own data. Idempotent: if this route
- * already has a run (route.courierRunId + route.stopIds), reused as-is rather than duplicated —
- * this lets either "Trimite traseul" or "Genereaza mesaje" be the one to trigger creation,
- * whichever the dispatcher does first, without ever producing two runs for the same route.
+ * Resolves a clients/{id} lookup for every address (in addrIds) that has a phone, sequentially
+ * AND memoized per normalized phone within this one call — a fresh client doc is only ever
+ * RESERVED (an id generated), not yet written to Firestore until the caller's batch.commit(),
+ * so a second resolveClientId() call for the same phone wouldn't see the first one's
+ * reservation via its query and would wrongly mint a second client for the same person (two
+ * addresses, same phone, one route — e.g. home + workplace). Memoizing by phone here (not just
+ * awaiting sequentially) is what actually prevents that. Shared by both a brand new run and
+ * resyncCourierRun's newly-added addresses.
  */
-async function ensureCourierRun(courier, route){
-  if (route.courierRunId && route.stopIds) return route.courierRunId;
-
-  // Generated once per courier, then kept forever (persisted via saveCouriersToStorage below) —
-  // this is what makes curier.html?courier={id} a permanent, install-once link: the SAME id is
-  // reused every day, only its courierLinks/{id}.currentRunId pointer changes.
-  if (!courier.persistentId) courier.persistentId = db.collection('courierLinks').doc().id;
-
-  const today = new Date().toISOString().slice(0, 10);
-  const runRef = db.collection('courierRuns').doc();
-  const stopRefs = {};
-  route.order.forEach(addrId => { stopRefs[addrId] = db.collection('stops').doc(); });
-  const stops = buildCourierRunStops(route, stopRefs);
-
-  // Resolved sequentially AND memoized per normalized phone within this one call — a fresh
-  // client doc is only ever RESERVED (an id generated), not yet written to Firestore until
-  // batch.commit() below, so a second resolveClientId() call for the same phone wouldn't see
-  // the first one's reservation via its query and would wrongly mint a second client for the
-  // same person (two addresses, same phone, one route — e.g. home + workplace). Memoizing by
-  // phone here (not just awaiting sequentially) is what actually prevents that.
+async function resolveClientLookups(addrIds){
   const phoneLookupCache = {};
-  const clientLookups = {};
-  for (const addrId of route.order){
+  const lookups = {};
+  for (const addrId of addrIds){
     const a = state.addresses.find(ad => ad.id === addrId);
     if (!a || !a.phone) continue;
     const normalized = normalizePhoneForMessages(a.phone);
     if (!normalized) continue;
     if (!phoneLookupCache[normalized]) phoneLookupCache[normalized] = await resolveClientId(a.phone);
-    clientLookups[addrId] = phoneLookupCache[normalized];
+    lookups[addrId] = phoneLookupCache[normalized];
   }
+  return lookups;
+}
+
+/**
+ * Creates (once per route) the courierRuns doc AND, alongside it in the same batch, one public
+ * stops/{stopId} doc per address — the deliberately narrow client-facing view (see
+ * firestore.rules), containing only that one client's own data. If a run already exists for
+ * this route, hands off to resyncCourierRun instead of a no-op — a route can legitimately
+ * change AFTER it's already been sent (a cancelled stop, a reassignment), and that needs to
+ * actually reach the courier, not silently stop being reflected the moment a run first exists.
+ */
+async function ensureCourierRun(courier, route){
+  // Generated once per courier, then kept forever (persisted via saveCouriersToStorage below) —
+  // this is what makes curier.html?courier={id} a permanent, install-once link: the SAME id is
+  // reused every day, only its courierLinks/{id}.currentRunId pointer changes.
+  if (!courier.persistentId) courier.persistentId = db.collection('courierLinks').doc().id;
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (route.courierRunId && route.stopIds){
+    return resyncCourierRun(courier, route, today);
+  }
+
+  const runRef = db.collection('courierRuns').doc();
+  const stopRefs = {};
+  route.order.forEach(addrId => { stopRefs[addrId] = db.collection('stops').doc(); });
+  const stops = buildCourierRunStops(route, stopRefs);
+  const clientLookups = await resolveClientLookups(route.order);
 
   const batch = db.batch();
   batch.set(runRef, {
@@ -3303,6 +3313,99 @@ async function ensureCourierRun(courier, route){
   saveCouriersToStorage(); // persists courier.persistentId if it was just generated above
   syncCourierRunListeners();
   return runRef.id;
+}
+
+/**
+ * Re-syncs an ALREADY-SENT run with the current route.order via targeted per-field dot-path
+ * writes — never a blanket overwrite. Stops that stay in the route keep their live state
+ * (status, check-ins, clientConfirmed/clientNote, courier position tracking) completely
+ * untouched — only their descriptive fields and sequence number refresh. Stops removed from
+ * the route (cancelled, or reassigned to a different courier) get dropped from
+ * courierRuns.stops and their public stops/{stopId} doc marked 'cancelled' (kept, not deleted
+ * — firestore.rules disallows it anyway — so an already-shared tracking link or history entry
+ * still shows what happened, same philosophy as cancelStop keeping the address itself as a
+ * record rather than deleting it).
+ */
+async function resyncCourierRun(courier, route, today){
+  const runRef = db.collection('courierRuns').doc(route.courierRunId);
+  const existingIds = Object.keys(route.stopIds);
+  const currentIds = route.order.map(String);
+  const newAddrIds = route.order.filter(addrId => !existingIds.includes(String(addrId)));
+
+  const stopRefs = {};
+  route.order.forEach(addrId => {
+    const existingId = route.stopIds[addrId];
+    stopRefs[addrId] = existingId ? { id: existingId } : db.collection('stops').doc();
+  });
+  const freshStops = buildCourierRunStops(route, stopRefs);
+  const clientLookups = await resolveClientLookups(newAddrIds);
+
+  const batch = db.batch();
+  const runUpdates = { courierName: courier.name, date: today };
+
+  existingIds.filter(addrId => !currentIds.includes(addrId)).forEach(addrId => {
+    runUpdates[`stops.${addrId}`] = firebase.firestore.FieldValue.delete();
+    batch.update(db.collection('stops').doc(route.stopIds[addrId]), { status: 'cancelled' });
+    delete route.stopIds[addrId];
+    if (route.clientIds) delete route.clientIds[addrId];
+  });
+
+  route.order.forEach(addrId => {
+    const fresh = freshStops[addrId];
+    if (!fresh) return;
+    if (newAddrIds.includes(addrId)){
+      runUpdates[`stops.${addrId}`] = fresh;
+      batch.set(stopRefs[addrId], {
+        runId: route.courierRunId,
+        addressId: addrId,
+        courierId: courier.id,
+        date: today,
+        clientName: fresh.name,
+        addr: fresh.addr,
+        details: fresh.details,
+        products: fresh.products,
+        productsKg: fresh.productsKg,
+        amount: fresh.amount,
+        payment: fresh.payment,
+        lat: fresh.lat,
+        lng: fresh.lng,
+        winStart: fresh.winStart,
+        status: 'pending',
+        stopsAhead: fresh.order - 1,
+        courierLat: null,
+        courierLng: null,
+        courierUpdatedAt: null,
+        clientConfirmed: null,
+        clientNote: ''
+      });
+      route.stopIds[addrId] = stopRefs[addrId].id;
+      const lookup = clientLookups[addrId];
+      if (lookup){
+        const update = {
+          phone: lookup.phone,
+          stopIds: firebase.firestore.FieldValue.arrayUnion(stopRefs[addrId].id),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        if (lookup.isNew) update.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+        batch.set(db.collection('clients').doc(lookup.id), update, { merge: true });
+        if (!route.clientIds) route.clientIds = {};
+        route.clientIds[addrId] = lookup.id;
+      }
+    } else {
+      // Already existed before this sync — refresh descriptive fields + sequence number only;
+      // never status/checkinLat/checkinLng/checkinNote/checkinAt (buildCourierRunStops always
+      // seeds those as pending/null, which is only correct for a brand new stop).
+      ['order', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'observatii', 'legGeometry'].forEach(field => {
+        runUpdates[`stops.${addrId}.${field}`] = fresh[field];
+      });
+    }
+  });
+
+  batch.update(runRef, runUpdates);
+  await batch.commit();
+  saveRoutesToStorage();
+  if (Object.keys(clientLookups).length) saveCouriersToStorage();
+  return route.courierRunId;
 }
 
 /** Returns the courier's daily link (curier.html?run=...), creating the underlying run if needed. */

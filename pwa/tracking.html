@@ -85,10 +85,16 @@ body{
   *{ animation-duration:0.001ms !important; transition-duration:0.001ms !important; }
 }
 
-/* ---- map: sticky at the top, info panel scrolls underneath — one page, no tabs ---- */
+/* ---- map at the top, info panel scrolls underneath — one page, no tabs.
+   NOT position:sticky: #mapWrap and #root are plain siblings under <body> with no bounding
+   parent, so a sticky map would never naturally "unstick" — it stayed pinned to the top of the
+   viewport for the ENTIRE page, permanently covering later content (the order-details/actions
+   cards, and the history list) that scrolled up underneath it, since it kept a higher z-index
+   than that unrelated content. Reported as: scrolling down, the status card correctly floats
+   over the map's bottom edge (intentional — see .status-card's negative margin-top below), but
+   everything after it was hidden behind the map instead of appearing below it. */
 #mapWrap{
   display:none;
-  position:sticky; top:0; z-index:10;
   width:100%; height:40vh; min-height:220px;
   background:var(--surface-2);
   box-shadow:var(--shadow-2);
