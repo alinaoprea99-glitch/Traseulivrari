@@ -8,6 +8,35 @@
 // înapoi la dispecer — nu mai e nevoie de niciun link/WhatsApp de retur.
 // ===================================================================
 
+/**
+ * On iOS, "Add to Home Screen" launches through the manifest's OWN start_url, not the URL
+ * that was actually open when the icon was created — that's the entire reason
+ * PERSISTENT_ID_STORAGE_KEY/LAST_RUN_STORAGE_KEY (below) exist at all. But relying on
+ * localStorage written in a plain Safari tab still being visible when relaunched from that
+ * home-screen icon turned out to be unreliable in practice (reported: works in Safari, "link
+ * invalid" from the installed icon) — iOS can give the standalone launch a separate storage
+ * context. The more robust fix: bake this courier's persistent id directly into the
+ * manifest's start_url BEFORE the icon is ever created, so nothing needs to be read back from
+ * storage on relaunch at all. Must run as early as possible (top of the script, not inside
+ * DOMContentLoaded) to have the best chance of finishing before the user reaches the Share
+ * sheet. Harmless if it doesn't finish in time or iOS ignores the blob: manifest — either way
+ * falls back to a plain bookmark, which still preserves the query string correctly (just
+ * without the fullscreen app chrome).
+ */
+(function bakePersistentIdIntoInstallManifest(){
+  const persistentId = new URLSearchParams(location.search).get('courier');
+  if (!persistentId) return;
+  fetch('manifest-curier.webmanifest')
+    .then(res => res.json())
+    .then(manifest => {
+      manifest.start_url = `./curier.html?courier=${encodeURIComponent(persistentId)}`;
+      const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+      const link = document.querySelector('link[rel="manifest"]');
+      if (link) link.setAttribute('href', blobUrl);
+    })
+    .catch(err => console.error('Nu am putut pregăti manifestul de instalare', err));
+})();
+
 const db = firebase.firestore();
 let currentRunId = null;
 
