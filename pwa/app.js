@@ -2754,6 +2754,25 @@ async function recomputeRouteFixedOrder(courier, route){
 }
 
 /**
+ * If this courier's route was already sent (has a courierRunId), pushes the current route
+ * state to their live app in the background — fire-and-forget from the caller's perspective,
+ * since this is a follow-up sync after a route edit, not something worth blocking the UI on.
+ * Without this, editing a route after "Trimite traseul" was already pressed (cancelling a
+ * stop, reassigning one to a different courier) would silently never reach the courier — see
+ * ensureCourierRun/resyncCourierRun — until she happened to press "Trimite traseul" again.
+ */
+function syncRouteToCourierIfSent(courierId){
+  const route = state.routes[courierId];
+  if (!route || !route.courierRunId) return;
+  const courier = state.couriers.find(c => c.id === courierId);
+  if (!courier) return;
+  ensureCourierRun(courier, route).catch(e => {
+    console.error('Nu am putut sincroniza traseul cu curierul', e);
+    showToast('Nu am putut trimite modificarea către curier — verifică conexiunea.', true);
+  });
+}
+
+/**
  * Marks an order as cancelled — pulled off the map and out of its courier's route (so the
  * courier no longer drives there), WITHOUT touching the order/sequence of any other stop
  * already communicated to other customers. The address itself is kept (not deleted), just
@@ -2772,12 +2791,14 @@ async function cancelStop(addrId){
   if (route){
     const idx = route.order.indexOf(addrId);
     if (idx !== -1) route.order.splice(idx, 1);
+    const courier = state.couriers.find(c => c.id === courierId);
     if (route.order.length){
-      const courier = state.couriers.find(c => c.id === courierId);
       await recomputeRouteFixedOrder(courier, route);
-    } else {
-      delete state.routes[courierId];
     }
+    // Before the route object is possibly deleted below — resyncs even the "removed the last
+    // remaining stop" case, so a courier who already has this run open sees it disappear too.
+    syncRouteToCourierIfSent(courierId);
+    if (!route.order.length) delete state.routes[courierId];
   }
 
   renderAddresses();
@@ -3341,7 +3362,12 @@ async function resyncCourierRun(courier, route, today){
   const clientLookups = await resolveClientLookups(newAddrIds);
 
   const batch = db.batch();
-  const runUpdates = { courierName: courier.name, date: today };
+  // Only ever touches the top-level "stops" key (via stops.* dot-paths below) — firestore.rules'
+  // update rule for courierRuns allows exactly ['stops', 'lastPos'] and nothing else, so
+  // courierName/date can't be included here (an earlier version did, which meant the WHOLE
+  // batch — including the cancelled-stop deletion — was silently rejected by security rules
+  // every time, since Firestore batches are all-or-nothing).
+  const runUpdates = {};
 
   existingIds.filter(addrId => !currentIds.includes(addrId)).forEach(addrId => {
     runUpdates[`stops.${addrId}`] = firebase.firestore.FieldValue.delete();
@@ -3642,9 +3668,11 @@ function moveAddressToCourier(addrId, newCourierId, opts = {}){
     }
     if (route.order.length){
       recalcRouteDistance(cid);
-    } else {
-      delete state.routes[cid];
     }
+    // Before a possibly-now-empty old route gets deleted below — same reasoning as cancelStop:
+    // a courier who already has this run open needs to see the stop leave, or arrive, live.
+    syncRouteToCourierIfSent(cid);
+    if (!route.order.length) delete state.routes[cid];
   });
 
   if (!opts.skipRender){
