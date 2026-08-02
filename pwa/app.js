@@ -1316,6 +1316,9 @@ function renderAddresses(){
     const phoneLine = a.phone ? `<div class="addr-sub-addr">${escapeHtml(a.phone)}</div>` : '';
     const noteLine = a.customerNote ? `<div class="addr-sub-addr">${ICONS.note}${escapeHtml(a.customerNote)}</div>` : '';
     const obsLine = a.observatii ? `<div class="addr-obs-line">${ICONS.tag}${escapeHtml(a.observatii)}</div>` : '';
+    // Written live by the client on their own tracking page — see applyCourierRunUpdates.
+    const clientConfirmedLine = a.clientConfirmed === true ? `<div class="addr-client-line">✓ Clientul a confirmat: va fi acasă</div>` : '';
+    const clientNoteLine = a.clientNote ? `<div class="addr-client-line">${ICONS.note}Client: „${escapeHtml(a.clientNote)}”</div>` : '';
     const paymentChip = (a.amount != null || a.paymentMethod)
       ? `<div class="addr-payment-chip ${a.paymentMethod === 'Ramburs' ? 'cod' : ''}">${a.amount != null ? a.amount.toFixed(2) + ' lei' : ''}${a.amount != null && a.paymentMethod ? ' · ' : ''}${escapeHtml(a.paymentMethod || '')}</div>`
       : '';
@@ -1347,6 +1350,8 @@ function renderAddresses(){
         ${phoneLine}
         ${noteLine}
         ${obsLine}
+        ${clientConfirmedLine}
+        ${clientNoteLine}
         ${paymentChip}
         ${cancelledBadge}
         ${statusHtml}
@@ -2974,6 +2979,8 @@ function renderRouteSummary(){
         ? `<div class="addr-window-chip${win.afterLimit ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
         : '';
       const obsLine = addr.observatii ? `<div class="addr-obs-line">${ICONS.tag}${escapeHtml(addr.observatii)}</div>` : '';
+      const clientConfirmedLine = addr.clientConfirmed === true ? `<div class="addr-client-line">✓ Clientul a confirmat: va fi acasă</div>` : '';
+      const clientNoteLine = addr.clientNote ? `<div class="addr-client-line">${ICONS.note}Client: „${escapeHtml(addr.clientNote)}”</div>` : '';
       const deliveryBadge = addr.deliveryStatus === 'delivered' ? `<span class="delivery-badge delivered">✓ Livrat</span>`
         : addr.deliveryStatus === 'failed' ? `<span class="delivery-badge failed">✕ Nelivrat</span>`
         : '';
@@ -2997,6 +3004,8 @@ function renderRouteSummary(){
           ${productsLine}
           ${phoneLine}
           ${obsLine}
+          ${clientConfirmedLine}
+          ${clientNoteLine}
           ${paymentChip}
           <div class="rs-row-actions">
             <select class="rs-courier-select" data-id="${addr.id}">
@@ -3292,7 +3301,18 @@ function applyCourierRunUpdates(runData){
       changed = true;
     }
     if (stop.status && stop.status !== addr.deliveryStatus){
-      addr.deliveryStatus = stop.status; // 'pending' | 'delivered' | 'failed' — not shown in UI yet, available for a future tracking view
+      addr.deliveryStatus = stop.status;
+      changed = true;
+    }
+    // Written by the client on their own tracking page (stops/{stopId}), propagated here by
+    // functions/index.js syncClientResponseToCourierRun — see the clientConfirmedLine/
+    // clientNoteLine rendering in renderAddresses/renderRouteSummary.
+    if (stop.clientConfirmed !== undefined && stop.clientConfirmed !== addr.clientConfirmed){
+      addr.clientConfirmed = stop.clientConfirmed;
+      changed = true;
+    }
+    if (stop.clientNote != null && stop.clientNote !== addr.clientNote){
+      addr.clientNote = stop.clientNote;
       changed = true;
     }
   });
@@ -3948,7 +3968,7 @@ function formatWindowForMessage(win){
 
 function buildDeliveryMessage(name, dayPhrase, windowText, trackingLink){
   const greeting = name ? `Buna ${name},` : 'Buna,';
-  const trackingLine = trackingLink ? `\n\n📍 Poti urmari livrarea in timp real aici: ${trackingLink}` : '';
+  const trackingLine = trackingLink ? `\n\n📍 Click aici sa confirmi si sa urmaresti livrarea in timp real:\n${trackingLink}` : '';
   return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${trackingLine}\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 

@@ -53,12 +53,15 @@ const ICONS = {
   note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.6 8.4A9 9 0 0 1 8 19l-4 1 1.3-3.7A8.3 8.3 0 0 1 4 11.5 8.4 8.4 0 0 1 12.5 3 8.4 8.4 0 0 1 21 11.5z"/></svg>'
 };
 
-// ---- Map: two markers (client's fixed home pin + the courier's live position) — no route
-// line here, since stops/{stopId} deliberately never carries the full route geometry (see
-// firestore.rules / app.js ensureCourierRun — the client only ever sees its own stop). ----
+// ---- Map: client's fixed home pin + the courier's live position, plus a live driving route
+// line straight from the courier's current position to THIS stop only — computed fresh via
+// OSRM (see fetchRouteAndEta below), never the dispatcher's full multi-stop geometry, so no
+// other client's location is ever revealed (stops/{stopId} deliberately never carries it —
+// see firestore.rules / app.js ensureCourierRun). ----
 let trackMap = null;
 let homeMarker = null;
 let courierMarker = null;
+let routeLineLayer = null;
 
 function initMapIfNeeded(){
   if (trackMap) return;
@@ -66,6 +69,47 @@ function initMapIfNeeded(){
   L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
     maxZoom: 19
   }).addTo(trackMap);
+  routeLineLayer = L.layerGroup().addTo(trackMap);
+}
+
+// ---- ETA: recomputed via OSRM whenever the courier's position actually changes (keyed off
+// courierLat/Lng, not on every snapshot — the courier position only updates every ~15s while
+// pending, and the 30s "actualizat acum X" refresh tick shouldn't trigger a redundant fetch). ----
+let etaFetchedForKey = null;
+let etaText = '';
+let etaLoading = false;
+
+async function fetchRouteAndEta(data){
+  const key = `${data.courierLat},${data.courierLng}`;
+  if (key === etaFetchedForKey) return;
+  etaFetchedForKey = key;
+  etaLoading = true;
+  updateStatusCard(stopData);
+
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${data.courierLng},${data.courierLat};${data.lng},${data.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    const json = await res.json();
+    if (json.code === 'Ok' && json.routes && json.routes.length){
+      const route = json.routes[0];
+      const driveMin = Math.round(route.duration / 60);
+      const km = (route.distance / 1000).toFixed(1);
+      const arrival = new Date(Date.now() + route.duration * 1000);
+      const arrivalStr = `${arrival.getHours().toString().padStart(2, '0')}:${arrival.getMinutes().toString().padStart(2, '0')}`;
+      etaText = `⏱ ~${driveMin} min (sosire ~${arrivalStr}) · ${km} km`;
+
+      routeLineLayer.clearLayers();
+      const latlngs = route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+      L.polyline(latlngs, { color: '#FF5A1F', weight: 4, opacity: 0.75 }).addTo(routeLineLayer);
+    } else {
+      etaText = '';
+    }
+  } catch (e){
+    console.error('Nu am putut calcula timpul estimat de sosire', e);
+    etaText = '';
+  }
+  etaLoading = false;
+  if (stopData) updateStatusCard(stopData);
 }
 
 function updateMap(data){
@@ -105,6 +149,14 @@ function updateMap(data){
     if (showCourier) trackMap.fitBounds([[data.lat, data.lng], [data.courierLat, data.courierLng]], { padding: [40, 50], maxZoom: 15 });
     else trackMap.setView([data.lat, data.lng], 15);
   }
+
+  if (showCourier){
+    fetchRouteAndEta(data);
+  } else {
+    routeLineLayer.clearLayers();
+    etaFetchedForKey = null;
+    etaText = '';
+  }
 }
 
 function buildStatusCardInner(data){
@@ -127,6 +179,10 @@ function buildStatusCardInner(data){
       sub = `Mai sunt ${ahead} ${ahead === 1 ? 'oprire' : 'opriri'} până la tine.`;
     }
   }
+  const showCourier = status === 'pending' && data.courierLat != null && data.courierLng != null;
+  const etaLine = showCourier
+    ? `<div class="status-eta">${etaText || (etaLoading ? 'Se calculează timpul estimat…' : '')}</div>`
+    : '';
   const updatedLine = (status === 'pending' && data.courierUpdatedAt)
     ? `<div class="status-updated">Poziție actualizată ${timeAgo(data.courierUpdatedAt)}</div>`
     : '';
@@ -136,6 +192,7 @@ function buildStatusCardInner(data){
       <div class="status-icon ${statusClass}">${icon}</div>
       <div class="status-title">${escapeHtml(title)}</div>
       ${sub ? `<div class="status-sub">${escapeHtml(sub)}</div>` : ''}
+      ${etaLine}
       ${updatedLine}
     `
   };

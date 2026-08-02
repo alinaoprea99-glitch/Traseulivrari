@@ -37,7 +37,11 @@ function stopsMapToArray(stopsMap){
     winStart: s.winStart || '',
     winEnd: s.winStart ? addMinutesToTime(s.winStart, 120) : '',
     observatii: s.observatii || '',
-    legGeometry: s.legGeometry || null
+    legGeometry: s.legGeometry || null,
+    // Written live by the client on their own tracking page (stops/{stopId}), propagated here
+    // by functions/index.js syncClientResponseToCourierRun — see stopCardHtml.
+    clientConfirmed: s.clientConfirmed ?? null,
+    clientNote: s.clientNote || ''
   }));
 }
 
@@ -594,6 +598,8 @@ function stopCardHtml(s, cardClass){
       </div>
       <div class="chip-row">${windowChip}${paymentChip}${productsChip}</div>
       ${s.note ? `<div class="note-line">${ICONS.note}${escapeHtml(s.note)}</div>` : ''}
+      ${s.clientConfirmed === true ? `<div class="client-line">${ICONS.check}Clientul a confirmat: va fi acasă</div>` : ''}
+      ${s.clientNote ? `<div class="client-line">${ICONS.note}Client: „${escapeHtml(s.clientNote)}”</div>` : ''}
       <div class="obs-editor">
         <label class="obs-label">${ICONS.tag}Observații</label>
         <textarea class="obs-input" data-obs-id="${s.id}" rows="2" placeholder="ex: sunat, nu răspunde — revin mai târziu">${escapeHtml(getNoteValue(s))}</textarea>
