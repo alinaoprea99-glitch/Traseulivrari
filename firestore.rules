@@ -42,8 +42,13 @@ service cloud.firestore {
       allow get: if request.auth != null;
       allow list: if false;
       allow create: if isDispatcher();
-      allow update: if request.auth != null
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['clientConfirmed', 'clientNote']);
+      // Two separate writers, two separate allowances: the client can only ever touch their
+      // own confirmation/note; the dispatcher can mark a stop 'cancelled' when it's removed
+      // from a route after already being sent (see app.js resyncCourierRun) — status is
+      // otherwise Cloud-Function-owned (functions/index.js), this is the one dispatcher-side
+      // exception to that.
+      allow update: if (isDispatcher() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+        || (request.auth != null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['clientConfirmed', 'clientNote']));
       allow delete: if false;
     }
 
