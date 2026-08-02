@@ -5,7 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Traseul meu — Curier</title>
 
-<link rel="manifest" href="manifest-curier.webmanifest">
+<!-- Deliberately NO <link rel="manifest"> — confirmed via real-device testing that iOS bakes
+     in a manifest's fixed start_url (./curier.html, no query string) at the moment "Add to
+     Home Screen" is tapped, and does so reading the manifest from the raw HTML, not whatever
+     the page's JS mutates it to afterward — so a dynamic swap/removal in curier.js was too
+     late to matter and the installed icon always relaunched with the query string stripped
+     ("link invalid", even with a working localStorage fallback, since iOS also partitions
+     storage between a standalone launch and a regular Safari tab). apple-mobile-web-app-capable
+     below is what actually gives the fullscreen "looks like an app" launch on iOS; without a
+     manifest there's no start_url to hijack the URL, matching tracking.html's proven-working
+     setup (which never had a manifest either). Trade-off: Android Chrome's "Add to Home
+     Screen" falls back to a plain shortcut instead of a full standalone install — acceptable
+     since courier use here is iOS-only so far. -->
 <meta name="theme-color" content="#2D6A4F">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">

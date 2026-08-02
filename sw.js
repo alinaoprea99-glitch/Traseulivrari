@@ -2,7 +2,7 @@
 // depends on Nominatim/OSRM or Firestore), so this exists only to (a) satisfy the browser's
 // installability requirement for a PWA and (b) let the static app shell still load if opened
 // with no connection. Everything else always goes to the network untouched.
-const CACHE_NAME = 'trasee-curieri-shell-v2';
+const CACHE_NAME = 'trasee-curieri-shell-v3';
 const APP_SHELL = [
   './',
   './index.html',
@@ -10,8 +10,7 @@ const APP_SHELL = [
   './curier.html',
   './curier.js',
   './firebase-config.js',
-  './manifest.webmanifest',
-  './manifest-curier.webmanifest'
+  './manifest.webmanifest'
 ];
 
 self.addEventListener('install', (event) => {

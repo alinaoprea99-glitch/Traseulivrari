@@ -8,27 +8,6 @@
 // înapoi la dispecer — nu mai e nevoie de niciun link/WhatsApp de retur.
 // ===================================================================
 
-/**
- * On iOS, "Add to Home Screen" launches through the manifest's OWN start_url, not the URL
- * that was actually open when the icon was created — that's the entire reason
- * PERSISTENT_ID_STORAGE_KEY/LAST_RUN_STORAGE_KEY (below) exist at all. A first attempt at
- * fixing this baked the persistent id into a dynamically-swapped blob: manifest — confirmed
- * via real-device testing that iOS does NOT honor that at install time (still "link invalid"
- * after a clean reinstall). What DOES work, confirmed on the same phone: tracking.html, which
- * has no manifest at all (only apple-mobile-web-app-capable), correctly preserves its query
- * string when relaunched from the home screen. apple-mobile-web-app-capable alone is what
- * gives iOS's fullscreen "looks like an app" launch — a manifest's start_url is what was
- * hijacking the URL, not the app-capable flag. So: for this persistent-link flow specifically,
- * drop the manifest entirely (matching tracking.html's proven setup) instead of fighting it.
- * The plain ?run= daily-link flow keeps its manifest untouched — no change there.
- */
-(function dropInstallManifestForPersistentLink(){
-  const persistentId = new URLSearchParams(location.search).get('courier');
-  if (!persistentId) return;
-  const link = document.querySelector('link[rel="manifest"]');
-  if (link) link.remove();
-})();
-
 const db = firebase.firestore();
 let currentRunId = null;
 
