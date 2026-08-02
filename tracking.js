@@ -286,13 +286,27 @@ function historyOrderCardHtml(stop){
 }
 
 /** Previous orders only (the current one is already shown in full above) — empty string if this is the client's first order. */
-function historySectionHtml(){
+function historySectionInnerHtml(){
   const cards = historyStopIds.map(id => historyCache[id]).filter(Boolean);
   if (!cards.length) return '';
-  return `
-    <div class="section-label">Comenzi anterioare</div>
-    ${cards.map(historyOrderCardHtml).join('')}
-  `;
+  return `<div class="section-label">Comenzi anterioare</div>${cards.map(historyOrderCardHtml).join('')}`;
+}
+
+/**
+ * Wrapped in its own container (#historySection) so a status change on one of them — a courier
+ * can mark delivered/failed, but can also UNDO that (see curier.js's data-mark toggle), so a
+ * past order is NOT actually immutable once it's no longer "current" — only refreshes that one
+ * section (see updateHistorySection), never the live status/order/actions card above it (would
+ * otherwise risk wiping out an in-progress note edit for no reason — see shellHtml).
+ */
+function historySectionHtml(){
+  return `<div id="historySection">${historySectionInnerHtml()}</div>`;
+}
+
+function updateHistorySection(){
+  const el = document.getElementById('historySection');
+  if (!el) return; // shell not built yet — historySectionHtml() will read the same (already up to date) historyCache once it is
+  el.innerHTML = historySectionInnerHtml();
 }
 
 /**
@@ -393,16 +407,24 @@ function render(){
 // Keeps "actualizat acum X min" fresh even between snapshots (courier may be stationary for a while).
 setInterval(() => { if (stopData) updateStatusCard(stopData); }, 30000);
 
-/** Fetches (and caches) every history stop not already loaded — a past order's data is stable, so each stopId is only ever fetched once. */
-async function loadHistoryStops(ids){
-  const missing = ids.filter(id => !historyCache[id]);
-  if (!missing.length) return;
-  try {
-    const docs = await Promise.all(missing.map(id => db.collection('stops').doc(id).get()));
-    docs.forEach((doc, i) => { if (doc.exists) historyCache[missing[i]] = doc.data(); });
-  } catch (e){
-    console.error('Nu am putut încărca istoricul comenzilor', e);
-  }
+// Live per-stop listeners for history entries — NOT a one-time fetch. A stop demoted to
+// "history" (a newer order became current) isn't necessarily finished yet, and even a
+// delivered/failed mark can be undone by the courier (curier.js's data-mark toggle), so a
+// cached snapshot would go silently stale — exactly the bug reported: an order stayed "În
+// curs" in the history list after the courier had actually marked it delivered. Once
+// subscribed, a stopId is never unsubscribed (historyStopIds only ever grows — arrayUnion
+// always appends), so this is a handful of listeners for the page's lifetime, not a leak.
+const historyUnsubs = {};
+
+function subscribeHistoryStop(id){
+  if (historyUnsubs[id]) return;
+  historyUnsubs[id] = db.collection('stops').doc(id).onSnapshot(
+    (doc) => {
+      if (doc.exists) historyCache[id] = doc.data();
+      updateHistorySection();
+    },
+    (err) => console.error('Nu am putut sincroniza o comandă din istoric', err)
+  );
 }
 
 /**
@@ -412,10 +434,11 @@ async function loadHistoryStops(ids){
  * live per-stop listener only when the current stop id actually changes, so an unrelated
  * history-list refresh never interrupts the live view.
  */
-async function handleStopIdsChange(stopIds){
+function handleStopIdsChange(stopIds){
   const newCurrentId = stopIds.length ? stopIds[stopIds.length - 1] : null;
   historyStopIds = stopIds.slice(0, -1).reverse();
-  await loadHistoryStops(historyStopIds);
+  historyStopIds.forEach(subscribeHistoryStop);
+  updateHistorySection();
 
   if (newCurrentId === currentStopId){
     render();
