@@ -11,30 +11,22 @@
 /**
  * On iOS, "Add to Home Screen" launches through the manifest's OWN start_url, not the URL
  * that was actually open when the icon was created — that's the entire reason
- * PERSISTENT_ID_STORAGE_KEY/LAST_RUN_STORAGE_KEY (below) exist at all. But relying on
- * localStorage written in a plain Safari tab still being visible when relaunched from that
- * home-screen icon turned out to be unreliable in practice (reported: works in Safari, "link
- * invalid" from the installed icon) — iOS can give the standalone launch a separate storage
- * context. The more robust fix: bake this courier's persistent id directly into the
- * manifest's start_url BEFORE the icon is ever created, so nothing needs to be read back from
- * storage on relaunch at all. Must run as early as possible (top of the script, not inside
- * DOMContentLoaded) to have the best chance of finishing before the user reaches the Share
- * sheet. Harmless if it doesn't finish in time or iOS ignores the blob: manifest — either way
- * falls back to a plain bookmark, which still preserves the query string correctly (just
- * without the fullscreen app chrome).
+ * PERSISTENT_ID_STORAGE_KEY/LAST_RUN_STORAGE_KEY (below) exist at all. A first attempt at
+ * fixing this baked the persistent id into a dynamically-swapped blob: manifest — confirmed
+ * via real-device testing that iOS does NOT honor that at install time (still "link invalid"
+ * after a clean reinstall). What DOES work, confirmed on the same phone: tracking.html, which
+ * has no manifest at all (only apple-mobile-web-app-capable), correctly preserves its query
+ * string when relaunched from the home screen. apple-mobile-web-app-capable alone is what
+ * gives iOS's fullscreen "looks like an app" launch — a manifest's start_url is what was
+ * hijacking the URL, not the app-capable flag. So: for this persistent-link flow specifically,
+ * drop the manifest entirely (matching tracking.html's proven setup) instead of fighting it.
+ * The plain ?run= daily-link flow keeps its manifest untouched — no change there.
  */
-(function bakePersistentIdIntoInstallManifest(){
+(function dropInstallManifestForPersistentLink(){
   const persistentId = new URLSearchParams(location.search).get('courier');
   if (!persistentId) return;
-  fetch('manifest-curier.webmanifest')
-    .then(res => res.json())
-    .then(manifest => {
-      manifest.start_url = `./curier.html?courier=${encodeURIComponent(persistentId)}`;
-      const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
-      const link = document.querySelector('link[rel="manifest"]');
-      if (link) link.setAttribute('href', blobUrl);
-    })
-    .catch(err => console.error('Nu am putut pregăti manifestul de instalare', err));
+  const link = document.querySelector('link[rel="manifest"]');
+  if (link) link.remove();
 })();
 
 const db = firebase.firestore();
