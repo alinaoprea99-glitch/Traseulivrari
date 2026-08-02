@@ -3111,14 +3111,26 @@ function wireRouteStopControls(container){
 // manual "send checkins back" link/WhatsApp round trip.
 // -------------------------------------------------------------------
 
+/** Base URL of the app itself (strips any hash and index.html), used to build both the courier and tracking links. */
+function appBaseUrl(){
+  return location.href.split('#')[0].replace(/index\.html?$/i, '').replace(/\/?$/, '/');
+}
+
+function buildTrackingLink(stopId){
+  return `${appBaseUrl()}tracking.html?s=${stopId}`;
+}
+
 /**
  * Stops keyed by address id (a map, not an array) so a single stop's status/check-in/note
  * can be updated in Firestore with a targeted dot-path update, without rewriting the whole
  * document — see updateStopField in curier.js. Coordinates are rounded to 6 decimals
  * (~10cm), since Nominatim returns much more precision than is useful here. winEnd isn't
  * stored — it's always winStart + 2h (see computeDeliveryWindows), so curier.js derives it.
+ * stopRefs maps addrId -> a pre-generated stops/{stopId} doc ref (see ensureCourierRun) —
+ * each courier-side stop remembers its own public stopId, so a status/check-in update here
+ * can find the matching client-facing doc (see functions/index.js syncCourierRunToStops).
  */
-function buildCourierRunStops(route){
+function buildCourierRunStops(route, stopRefs){
   const stops = {};
   route.order.forEach((addrId, idx) => {
     const a = state.addresses.find(ad => ad.id === addrId);
@@ -3149,32 +3161,79 @@ function buildCourierRunStops(route){
       checkinLat: null,
       checkinLng: null,
       checkinNote: null,
-      checkinAt: null
+      checkinAt: null,
+      stopId: stopRefs[addrId].id
     };
   });
   return stops;
 }
 
 /**
- * Creates the Firestore doc the courier's phone will read, remembers its id on the route
- * (so the dispatcher can keep listening for live check-ins/status — see
- * syncCourierRunListeners), and returns the link. The link is just a short Firestore
- * document id now — no compression, no third-party shortener needed.
+ * Creates (once per route) the courierRuns doc AND, alongside it in the same batch, one public
+ * stops/{stopId} doc per address — the deliberately narrow client-facing view (see
+ * firestore.rules), containing only that one client's own data. Idempotent: if this route
+ * already has a run (route.courierRunId + route.stopIds), reused as-is rather than duplicated —
+ * this lets either "Trimite traseul" or "Genereaza mesaje" be the one to trigger creation,
+ * whichever the dispatcher does first, without ever producing two runs for the same route.
  */
-async function createCourierRun(courier, route){
-  const docRef = await db.collection('courierRuns').add({
+async function ensureCourierRun(courier, route){
+  if (route.courierRunId && route.stopIds) return route.courierRunId;
+
+  const runRef = db.collection('courierRuns').doc();
+  const stopRefs = {};
+  route.order.forEach(addrId => { stopRefs[addrId] = db.collection('stops').doc(); });
+  const stops = buildCourierRunStops(route, stopRefs);
+
+  const batch = db.batch();
+  batch.set(runRef, {
     courierId: courier.id,
     courierName: courier.name,
     date: new Date().toISOString().slice(0, 10),
-    stops: buildCourierRunStops(route),
+    stops,
     lastPos: null,
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
   });
-  route.courierRunId = docRef.id;
+  route.order.forEach(addrId => {
+    const a = state.addresses.find(ad => ad.id === addrId);
+    if (!a) return;
+    const win = route.windows ? route.windows[addrId] : null;
+    batch.set(stopRefs[addrId], {
+      runId: runRef.id,
+      addressId: addrId,
+      courierId: courier.id,
+      clientName: a.clientName || '',
+      addr: a.raw,
+      details: a.details || '',
+      products: a.products || '',
+      productsKg: a.productsKg,
+      amount: a.amount,
+      payment: a.paymentMethod || '',
+      lat: Math.round(a.lat * 1e6) / 1e6,
+      lng: Math.round(a.lng * 1e6) / 1e6,
+      winStart: win ? win.windowStart : '',
+      status: 'pending',
+      stopsAhead: stops[addrId].order - 1,
+      courierLat: null,
+      courierLng: null,
+      courierUpdatedAt: null,
+      clientConfirmed: null,
+      clientNote: ''
+    });
+  });
+  await batch.commit();
+
+  route.courierRunId = runRef.id;
+  route.stopIds = {};
+  route.order.forEach(addrId => { route.stopIds[addrId] = stopRefs[addrId].id; });
   saveRoutesToStorage();
   syncCourierRunListeners();
-  const base = location.href.split('#')[0].replace(/index\.html?$/i, '').replace(/\/?$/, '/');
-  return `${base}curier.html?run=${docRef.id}`;
+  return runRef.id;
+}
+
+/** Returns the courier's link (curier.html?run=...), creating the underlying run if needed. */
+async function createCourierRun(courier, route){
+  await ensureCourierRun(courier, route);
+  return `${appBaseUrl()}curier.html?run=${route.courierRunId}`;
 }
 
 /** Flags setups where the generated link can't actually be opened from a different phone. */
@@ -3887,9 +3946,10 @@ function formatWindowForMessage(win){
   return `${win.windowStart.replace(':', '.')} - ${win.windowEnd.replace(':', '.')}`;
 }
 
-function buildDeliveryMessage(name, dayPhrase, windowText){
+function buildDeliveryMessage(name, dayPhrase, windowText, trackingLink){
   const greeting = name ? `Buna ${name},` : 'Buna,';
-  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
+  const trackingLine = trackingLink ? `\n\n📍 Poti urmari livrarea in timp real aici: ${trackingLink}` : '';
+  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${trackingLine}\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 
 /** All non-cancelled stops that are part of a generated route and have a computed delivery window. */
@@ -3903,13 +3963,13 @@ function getMessageableStops(){
       if (!addr || addr.cancelled) return;
       const win = route.windows ? route.windows[addr.id] : null;
       if (!win || !addr.phone) return;
-      stops.push({ addr, win });
+      stops.push({ addr, win, courier: c, route });
     });
   });
   return stops;
 }
 
-function showGenerateMessagesModal(){
+async function showGenerateMessagesModal(){
   const stops = getMessageableStops();
   if (!stops.length){
     showToast('Niciun client cu telefon și interval de livrare calculat — generează întâi traseele.', true);
@@ -3926,21 +3986,45 @@ function showGenerateMessagesModal(){
         <label>Ziua livrării</label>
         <input type="text" id="gmDayPhrase" value="mâine">
       </div>
-      <div id="gmRows" style="max-height:42vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;"></div>
+      <div id="gmRows" style="max-height:42vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
+        <div class="loading-row" id="gmLoadingRow" style="justify-content:center;"><span class="spinner sp-dark"></span><span>Se pregătesc linkurile de urmărire…</span></div>
+      </div>
       <div style="display:flex; gap:6px; margin-top:14px;">
         <button class="btn btn-ghost btn-sm" id="gmCancelBtn" style="flex:1;">Anulează</button>
-        <button class="btn btn-primary btn-sm" id="gmDownloadBtn" style="flex:1;">Descarcă fișierul (${stops.length})</button>
+        <button class="btn btn-primary btn-sm" id="gmDownloadBtn" style="flex:1;" disabled>Descarcă fișierul (${stops.length})</button>
       </div>
     </div>
   `;
   document.body.appendChild(overlay);
 
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  overlay.querySelector('#gmCancelBtn').addEventListener('click', close);
+
+  // Every stop needs its own tracking link, which needs a stops/{stopId} doc to exist — reuse the
+  // run/stops already created if "Trimite traseul" ran first, otherwise create them silently here
+  // (ensureCourierRun is idempotent per route, so whichever action runs first "wins").
+  const couriersInvolved = [...new Set(stops.map(s => s.courier))];
+  try {
+    await Promise.all(couriersInvolved.map(c => ensureCourierRun(c, state.routes[c.id])));
+  } catch (e){
+    console.error('Nu am putut pregăti linkurile de urmărire', e);
+    if (overlay.isConnected){
+      overlay.querySelector('#gmRows').innerHTML = '<div class="hint" style="color:var(--danger);">Nu am putut genera linkurile de urmărire pentru clienți — verifică conexiunea și încearcă din nou.</div>';
+    }
+    return;
+  }
+  if (!overlay.isConnected) return; // modal was closed while the writes were in flight
+
   const rowsEl = overlay.querySelector('#gmRows');
+  rowsEl.innerHTML = '';
   const dayInput = overlay.querySelector('#gmDayPhrase');
+  overlay.querySelector('#gmDownloadBtn').disabled = false;
 
   function renderRow(stop){
-    const { addr, win } = stop;
+    const { addr, win, route } = stop;
     const windowText = formatWindowForMessage(win);
+    const trackingLink = buildTrackingLink(route.stopIds[addr.id]);
     const row = document.createElement('div');
     row.className = 'gm-row';
     row.innerHTML = `
@@ -3954,7 +4038,7 @@ function showGenerateMessagesModal(){
     `;
     const preview = row.querySelector('.gm-preview');
     const updatePreview = () => {
-      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText);
+      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText, trackingLink);
     };
     row.querySelector('.gm-name-input').addEventListener('input', (e) => {
       addr.greetingNameOverride = e.target.value.trim();
@@ -3968,15 +4052,12 @@ function showGenerateMessagesModal(){
   const updaters = stops.map(renderRow);
   dayInput.addEventListener('input', () => updaters.forEach(fn => fn()));
 
-  const close = () => overlay.remove();
-  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-  overlay.querySelector('#gmCancelBtn').addEventListener('click', close);
   overlay.querySelector('#gmDownloadBtn').addEventListener('click', () => {
     saveAddressesToStorage(); // persist any greeting-name corrections made in this review pass
     const dayPhrase = dayInput.value.trim();
-    const payload = stops.map(({ addr, win }) => ({
+    const payload = stops.map(({ addr, win, route }) => ({
       phone: normalizePhoneForMessages(addr.phone),
-      message: buildDeliveryMessage(getGreetingFirstName(addr), dayPhrase, formatWindowForMessage(win))
+      message: buildDeliveryMessage(getGreetingFirstName(addr), dayPhrase, formatWindowForMessage(win), buildTrackingLink(route.stopIds[addr.id]))
     }));
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
