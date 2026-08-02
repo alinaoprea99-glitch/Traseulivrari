@@ -105,6 +105,12 @@ function updateStopField(stopId, fields){
 const LAST_RUN_STORAGE_KEY = 'curier-last-run';
 const PERSISTENT_ID_STORAGE_KEY = 'curier-persistent-id';
 
+// Two install-related fixes in a row didn't resolve a real-device "link invalid" report, and
+// there's no way to remote-debug a courier's actual phone — so instead of guessing again, the
+// "link invalid" screen itself shows exactly what this run detected (see render()'s invalid
+// state), turning the phone into a diagnostic that can just be read back over the phone/chat.
+let debugInfo = {};
+
 let runUnsub = null;
 
 /** Subscribes to courierRuns/{runId} live — re-subscribes only if the id actually changed, so the persistent-link pointer advancing to a new day's run doesn't leave a stale listener behind. */
@@ -115,6 +121,7 @@ function subscribeToRun(runId){
   runUnsub = db.collection('courierRuns').doc(runId).onSnapshot(
     (doc) => {
       loadingRun = false;
+      debugInfo.courierRunDocExists = doc.exists;
       if (!doc.exists){
         payload = null;
         render();
@@ -124,6 +131,7 @@ function subscribeToRun(runId){
       applyRunSnapshot(runId, doc.data());
     },
     (err) => {
+      debugInfo.courierRunError = err.message;
       console.error('Nu am putut încărca traseul', err);
       loadingRun = false;
       payload = null;
@@ -146,17 +154,32 @@ function initCourierRun(){
   let persistentId = params.get('courier');
   let runId = params.get('run');
 
+  debugInfo = {
+    href: location.href,
+    displayMode: (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone ? 'standalone' : 'browser',
+    courierParam: params.get('courier') || '(niciunul)',
+    runParam: params.get('run') || '(niciunul)'
+  };
+
   if (persistentId){
+    debugInfo.source = 'URL ?courier=';
     try { localStorage.setItem(PERSISTENT_ID_STORAGE_KEY, persistentId); } catch (e){}
   } else if (!runId){
     // Opened with no query param at all — the normal case once installed, since the manifest's
     // fixed start_url can't carry one. Prefer a saved permanent id (keeps following every future
     // day live) over a saved one-day run id (frozen on whichever day it was last opened).
     try { persistentId = localStorage.getItem(PERSISTENT_ID_STORAGE_KEY); } catch (e){}
-    if (!persistentId){
+    if (persistentId){
+      debugInfo.source = 'localStorage (id permanent salvat)';
+    } else {
       try { runId = localStorage.getItem(LAST_RUN_STORAGE_KEY); } catch (e){}
+      debugInfo.source = runId ? 'localStorage (ultimul traseu salvat)' : 'niciuna — nimic găsit';
     }
+  } else {
+    debugInfo.source = 'URL ?run=';
   }
+  debugInfo.resolvedPersistentId = persistentId || '(niciunul)';
+  debugInfo.resolvedRunId = runId || '(niciunul, încă)';
 
   if (!persistentId && !runId){
     loadingRun = false;
@@ -172,14 +195,18 @@ function initCourierRun(){
   firebase.auth().setPersistence(firebase.auth.Auth.Persistence.SESSION)
     .then(() => firebase.auth().signInAnonymously())
     .then(() => {
+      debugInfo.authOk = true;
       if (persistentId){
         db.collection('courierLinks').doc(persistentId).onSnapshot(
           (doc) => {
+            debugInfo.courierLinkDocExists = doc.exists;
             const activeRunId = doc.exists ? doc.data().currentRunId : null;
+            debugInfo.resolvedRunId = activeRunId || '(niciunul, încă)';
             if (activeRunId) subscribeToRun(activeRunId);
             else { loadingRun = false; payload = null; render(); }
           },
           (err) => {
+            debugInfo.courierLinkError = err.message;
             console.error('Nu am putut încărca linkul permanent', err);
             loadingRun = false;
             payload = null;
@@ -191,6 +218,8 @@ function initCourierRun(){
       subscribeToRun(runId);
     })
     .catch((err) => {
+      debugInfo.authOk = false;
+      debugInfo.authError = err.message;
       console.error('Autentificare anonimă eșuată', err);
       loadingRun = false;
       payload = null;
@@ -542,6 +571,9 @@ function render(){
         <div class="es-icon">${ICONS.warn}</div>
         <div class="es-title">Link invalid sau incomplet</div>
         <div class="es-sub">Acest link nu conține un traseu valid. Cere dispecerului un link nou.</div>
+        <div style="margin-top:18px; text-align:left; font-size:10.5px; line-height:1.6; color:var(--ink-faint); background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; word-break:break-all;">
+          ${Object.entries(debugInfo).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${escapeHtml(String(v))}</div>`).join('')}
+        </div>
       </div>`;
     return;
   }
