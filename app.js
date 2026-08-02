@@ -3129,6 +3129,25 @@ function buildTrackingLink(stopId){
   return `${appBaseUrl()}tracking.html?s=${stopId}`;
 }
 
+function buildHistoryLink(clientId){
+  return `${appBaseUrl()}istoric.html?c=${clientId}`;
+}
+
+/**
+ * Finds the clients/{clientId} doc matching this phone (normalized the same way messages are
+ * — see normalizePhoneForMessages), or reserves a fresh doc ID for a new one. Only reserves —
+ * doesn't write — so the actual create/update happens in the SAME batch as the stop it's for
+ * (see ensureCourierRun), keeping "new client + first order" atomic instead of two round trips.
+ * Requires firestore.rules' `list: if isDispatcher()` on clients/ (a query, not a get-by-id).
+ */
+async function resolveClientId(phone){
+  const normalized = normalizePhoneForMessages(phone);
+  if (!normalized) return null;
+  const existing = await db.collection('clients').where('phone', '==', normalized).limit(1).get();
+  if (!existing.empty) return { id: existing.docs[0].id, phone: normalized, isNew: false };
+  return { id: db.collection('clients').doc().id, phone: normalized, isNew: true };
+}
+
 /**
  * Stops keyed by address id (a map, not an array) so a single stop's status/check-in/note
  * can be updated in Firestore with a targeted dot-path update, without rewriting the whole
@@ -3188,16 +3207,34 @@ function buildCourierRunStops(route, stopRefs){
 async function ensureCourierRun(courier, route){
   if (route.courierRunId && route.stopIds) return route.courierRunId;
 
+  const today = new Date().toISOString().slice(0, 10);
   const runRef = db.collection('courierRuns').doc();
   const stopRefs = {};
   route.order.forEach(addrId => { stopRefs[addrId] = db.collection('stops').doc(); });
   const stops = buildCourierRunStops(route, stopRefs);
 
+  // Resolved sequentially AND memoized per normalized phone within this one call — a fresh
+  // client doc is only ever RESERVED (an id generated), not yet written to Firestore until
+  // batch.commit() below, so a second resolveClientId() call for the same phone wouldn't see
+  // the first one's reservation via its query and would wrongly mint a second client for the
+  // same person (two addresses, same phone, one route — e.g. home + workplace). Memoizing by
+  // phone here (not just awaiting sequentially) is what actually prevents that.
+  const phoneLookupCache = {};
+  const clientLookups = {};
+  for (const addrId of route.order){
+    const a = state.addresses.find(ad => ad.id === addrId);
+    if (!a || !a.phone) continue;
+    const normalized = normalizePhoneForMessages(a.phone);
+    if (!normalized) continue;
+    if (!phoneLookupCache[normalized]) phoneLookupCache[normalized] = await resolveClientId(a.phone);
+    clientLookups[addrId] = phoneLookupCache[normalized];
+  }
+
   const batch = db.batch();
   batch.set(runRef, {
     courierId: courier.id,
     courierName: courier.name,
-    date: new Date().toISOString().slice(0, 10),
+    date: today,
     stops,
     lastPos: null,
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -3210,6 +3247,7 @@ async function ensureCourierRun(courier, route){
       runId: runRef.id,
       addressId: addrId,
       courierId: courier.id,
+      date: today,
       clientName: a.clientName || '',
       addr: a.raw,
       details: a.details || '',
@@ -3228,12 +3266,26 @@ async function ensureCourierRun(courier, route){
       clientConfirmed: null,
       clientNote: ''
     });
+    const lookup = clientLookups[addrId];
+    if (lookup){
+      const update = {
+        phone: lookup.phone,
+        stopIds: firebase.firestore.FieldValue.arrayUnion(stopRefs[addrId].id),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      if (lookup.isNew) update.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+      batch.set(db.collection('clients').doc(lookup.id), update, { merge: true });
+    }
   });
   await batch.commit();
 
   route.courierRunId = runRef.id;
   route.stopIds = {};
-  route.order.forEach(addrId => { route.stopIds[addrId] = stopRefs[addrId].id; });
+  route.clientIds = {};
+  route.order.forEach(addrId => {
+    route.stopIds[addrId] = stopRefs[addrId].id;
+    if (clientLookups[addrId]) route.clientIds[addrId] = clientLookups[addrId].id;
+  });
   saveRoutesToStorage();
   syncCourierRunListeners();
   return runRef.id;
@@ -3966,10 +4018,11 @@ function formatWindowForMessage(win){
   return `${win.windowStart.replace(':', '.')} - ${win.windowEnd.replace(':', '.')}`;
 }
 
-function buildDeliveryMessage(name, dayPhrase, windowText, trackingLink){
+function buildDeliveryMessage(name, dayPhrase, windowText, trackingLink, historyLink){
   const greeting = name ? `Buna ${name},` : 'Buna,';
   const trackingLine = trackingLink ? `\n\n📍 Click aici sa confirmi si sa urmaresti livrarea in timp real:\n${trackingLink}` : '';
-  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${trackingLine}\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
+  const historyLine = historyLink ? `\n\n🧾 Istoricul comenzilor tale, mereu la acest link:\n${historyLink}` : '';
+  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${trackingLine}${historyLine}\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 
 /** All non-cancelled stops that are part of a generated route and have a computed delivery window. */
@@ -4045,6 +4098,7 @@ async function showGenerateMessagesModal(){
     const { addr, win, route } = stop;
     const windowText = formatWindowForMessage(win);
     const trackingLink = buildTrackingLink(route.stopIds[addr.id]);
+    const historyLink = route.clientIds && route.clientIds[addr.id] ? buildHistoryLink(route.clientIds[addr.id]) : '';
     const row = document.createElement('div');
     row.className = 'gm-row';
     row.innerHTML = `
@@ -4058,7 +4112,7 @@ async function showGenerateMessagesModal(){
     `;
     const preview = row.querySelector('.gm-preview');
     const updatePreview = () => {
-      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText, trackingLink);
+      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText, trackingLink, historyLink);
     };
     row.querySelector('.gm-name-input').addEventListener('input', (e) => {
       addr.greetingNameOverride = e.target.value.trim();
@@ -4077,7 +4131,11 @@ async function showGenerateMessagesModal(){
     const dayPhrase = dayInput.value.trim();
     const payload = stops.map(({ addr, win, route }) => ({
       phone: normalizePhoneForMessages(addr.phone),
-      message: buildDeliveryMessage(getGreetingFirstName(addr), dayPhrase, formatWindowForMessage(win), buildTrackingLink(route.stopIds[addr.id]))
+      message: buildDeliveryMessage(
+        getGreetingFirstName(addr), dayPhrase, formatWindowForMessage(win),
+        buildTrackingLink(route.stopIds[addr.id]),
+        route.clientIds && route.clientIds[addr.id] ? buildHistoryLink(route.clientIds[addr.id]) : ''
+      )
     }));
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);

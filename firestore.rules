@@ -46,5 +46,20 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['clientConfirmed', 'clientNote']);
       allow delete: if false;
     }
+
+    // Istoric client — un document per client (potrivit după telefon, vezi app.js
+    // resolveClientId), care doar ȚINE o listă de stopId-uri (stopIds) către comenzile lui
+    // trecute. Nu duplică nicio dată de comandă — pagina de istoric (istoric.html) citește
+    // fiecare stops/{stopId} referențiat individual (deja permis mai sus). Linkul
+    // (istoric.html?c={clientId}) e același mereu pentru un telefon — ID-ul e negăsibil
+    // (Firestore auto-ID), același model de încredere ca la stops/courierRuns: "get" pe ID
+    // exact, "list" interzis pentru client — doar dispecerul poate interoga după telefon
+    // (are nevoie de "list" ca să găsească clientul existent înainte de a adăuga o comandă).
+    match /clients/{clientId} {
+      allow get: if request.auth != null;
+      allow list: if isDispatcher();
+      allow create, update: if isDispatcher();
+      allow delete: if false;
+    }
   }
 }
