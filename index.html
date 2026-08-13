@@ -261,6 +261,44 @@ input[type=file]{display:none;}
 .addr-toolbar-link:hover{color:var(--route); text-decoration:underline;}
 .addr-toolbar-sep{color:var(--line); font-size:10px;}
 
+.addr-search-input{
+  width:100%;
+  margin-top:9px;
+  padding:7px 10px;
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','SF Pro Display','Segoe UI',Roboto,sans-serif;
+  font-size:12.5px;
+  background:var(--white);
+  color:var(--ink);
+  box-sizing:border-box;
+}
+.addr-search-input:focus{
+  outline:2px solid var(--route);
+  outline-offset:-1px;
+  border-color:var(--route);
+}
+.addr-filter-chips{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:8px;
+}
+.addr-filter-chip{
+  border:1px solid var(--line);
+  background:var(--white);
+  color:var(--ink-soft);
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','SF Pro Display','Segoe UI',Roboto,sans-serif;
+  font-size:11px;
+  font-weight:600;
+  padding:5px 11px;
+  border-radius:var(--radius-pill);
+  cursor:pointer;
+  transition:background .15s, border-color .15s, color .15s;
+}
+.addr-filter-chip:hover{border-color:var(--route); color:var(--route);}
+.addr-filter-chip.active{background:var(--route); border-color:var(--route); color:var(--white);}
+
 /* ---- form fields ---- */
 .field{margin-bottom:12px;}
 .field label{
@@ -874,7 +912,7 @@ input[type=file]{display:none;}
 .map-title-chip .mt-sub{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums; font-size:10px; color:var(--ink-soft); margin-top:2px;}
 
 .toast{
-  position:absolute;
+  position:fixed;
   top:18px; left:50%;
   transform:translateX(-50%) translateY(-6px);
   background:var(--ink);
@@ -883,7 +921,7 @@ input[type=file]{display:none;}
   border-radius:var(--radius-pill);
   font-size:12.5px;
   font-weight:600;
-  z-index:1000;
+  z-index:2100;
   opacity:0;
   box-shadow:var(--shadow-2);
   transition:opacity .3s cubic-bezier(.22,1,.36,1), transform .3s cubic-bezier(.22,1,.36,1);
@@ -892,8 +930,21 @@ input[type=file]{display:none;}
   align-items:center;
   gap:8px;
 }
-.toast.show{opacity:1; transform:translateX(-50%) translateY(4px);}
+.toast.show{opacity:1; transform:translateX(-50%) translateY(4px); pointer-events:auto;}
 .toast.error{background:var(--danger);}
+.toast-action{
+  border:1px solid rgba(255,255,255,0.4);
+  background:none;
+  color:inherit;
+  font-family:inherit;
+  font-size:11.5px;
+  font-weight:700;
+  padding:4px 10px;
+  border-radius:var(--radius-pill);
+  cursor:pointer;
+  white-space:nowrap;
+}
+.toast-action:hover{background:rgba(255,255,255,0.18);}
 
 /* leaflet popup tweak */
 .leaflet-popup-content-wrapper{border-radius:var(--radius-sm); font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','SF Pro Display','Segoe UI',Roboto,sans-serif; box-shadow:var(--shadow-2);}
@@ -1041,6 +1092,12 @@ input[type=file]{display:none;}
           <div class="addr-toolbar-row">
             <button class="addr-toolbar-link" id="importExcelExportBtn">↩ recuperează dintr-un Excel exportat anterior</button>
             <input type="file" id="importExcelExportInput" accept=".xlsx,.xls" style="display:none;">
+          </div>
+          <input type="text" class="addr-search-input" id="addrSearchInput" placeholder="Caută după nume, telefon sau adresă…">
+          <div class="addr-filter-chips" id="addrFilterChips">
+            <button class="addr-filter-chip active" data-filter="all">Toate</button>
+            <button class="addr-filter-chip" data-filter="problems">Cu probleme</button>
+            <button class="addr-filter-chip" data-filter="unassigned">Nerepartizate</button>
           </div>
         </div>
       </div>

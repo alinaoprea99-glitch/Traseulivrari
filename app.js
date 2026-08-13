@@ -176,12 +176,24 @@ function setDateStamp(){
   document.getElementById('dateStamp').textContent = `Manifest de livrare · ${fmt}`;
 }
 
-function showToast(msg, isError=false){
+// action: optional { label, onClick } — renders a button inside the toast (e.g. "Anulează"),
+// and gives it more time on screen since there's something to read and react to.
+function showToast(msg, isError=false, action=null){
   const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast show' + (isError ? ' error' : '');
   clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), 3200);
+  if (action){
+    t.innerHTML = `<span class="toast-msg"></span><button class="toast-action">${escapeHtml(action.label)}</button>`;
+    t.querySelector('.toast-msg').textContent = msg;
+    t.querySelector('.toast-action').addEventListener('click', () => {
+      clearTimeout(t._timer);
+      t.classList.remove('show');
+      action.onClick();
+    });
+  } else {
+    t.textContent = msg;
+  }
+  t.className = 'toast show' + (isError ? ' error' : '');
+  t._timer = setTimeout(() => t.classList.remove('show'), action ? 5000 : 3200);
 }
 
 // -------------------------------------------------------------------
@@ -610,6 +622,19 @@ function initAddressPanel(){
   importExcelExportInput.addEventListener('change', () => {
     if (importExcelExportInput.files.length) importFromExportedExcel(importExcelExportInput.files[0]);
     importExcelExportInput.value = '';
+  });
+
+  document.getElementById('addrSearchInput').addEventListener('input', e => {
+    addrSearchQuery = e.target.value;
+    renderAddresses();
+  });
+
+  document.getElementById('addrFilterChips').addEventListener('click', e => {
+    const chip = e.target.closest('.addr-filter-chip');
+    if (!chip) return;
+    addrFilterMode = chip.dataset.filter;
+    document.querySelectorAll('.addr-filter-chip').forEach(c => c.classList.toggle('active', c === chip));
+    renderAddresses();
   });
 }
 
@@ -1258,6 +1283,19 @@ function maybeShowGeocodeButton(){
 // -------------------------------------------------------------------
 // ADDRESSES — render / list interactions / drag-drop
 // -------------------------------------------------------------------
+// True when an address needs the dispatcher's attention — same conditions that drive the
+// ⚠/✕ badges below, kept in one place so the "Cu probleme" filter can't drift out of sync.
+function addressHasIssue(a){
+  if (a.cancelled) return false;
+  if (a.status === 'error') return true;
+  if (a.status === 'ok' && a.outOfArea) return true;
+  if (a.status === 'ok' && a.confidence && a.confidence !== 'high' && a.confidence !== 'verified' && !a.manuallyAdjusted) return true;
+  return false;
+}
+
+let addrFilterMode = 'all';
+let addrSearchQuery = '';
+
 function renderAddresses(){
   const list = document.getElementById('addrList');
   if (!state.addresses.length){
@@ -1271,8 +1309,31 @@ function renderAddresses(){
     return;
   }
 
+  const query = addrSearchQuery.trim().toLowerCase();
+  const visibleAddresses = state.addresses.filter(a => {
+    if (addrFilterMode === 'problems' && !addressHasIssue(a)) return false;
+    if (addrFilterMode === 'unassigned' && (a.courierId != null || a.cancelled)) return false;
+    if (query){
+      const haystack = [a.clientName, a.raw, a.phone, a.details].filter(Boolean).join(' ').toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
+
+  if (!visibleAddresses.length){
+    list.innerHTML = `
+      <div class="empty-state">
+        <div class="es-icon">${ICONS.emptyPin}</div>
+        <div class="es-title">Nicio adresă corespunde filtrului</div>
+        <div class="es-sub">Încearcă „Toate” sau schimbă termenul de căutare</div>
+      </div>`;
+    if (!applyingRemoteSnapshot) saveAddressesToStorage();
+    return;
+  }
+
   list.innerHTML = '';
-  state.addresses.forEach((a, idx) => {
+  visibleAddresses.forEach((a) => {
+    const idx = state.addresses.indexOf(a);
     const item = document.createElement('div');
     item.className = 'addr-item';
     item.dataset.id = a.id;
@@ -1425,21 +1486,27 @@ function renderAddresses(){
     btn.addEventListener('click', e => {
       e.stopPropagation();
       const id = parseInt(btn.dataset.id);
-      const addr = state.addresses.find(a => a.id === id);
-      const label = addr ? (addr.clientName || addr.raw) : 'această adresă';
-      if (!confirm(`Sigur vrei să ștergi adresa "${label}"?`)) return;
-      state.addresses = state.addresses.filter(a => a.id !== id);
-      // remove this address from any route it was part of, and recalc that route's distance
+      const addrIndex = state.addresses.findIndex(a => a.id === id);
+      if (addrIndex === -1) return;
+      const addr = state.addresses[addrIndex];
+      const label = addr.clientName || addr.raw;
+
+      // Snapshot each route this address was part of (courier + its position in the order)
+      // so "Anulează" can put everything back exactly where it was, not just re-add the address.
+      const routeBackups = [];
       Object.keys(state.routes).forEach(courierId => {
+        const orderIdx = state.routes[courierId].order.indexOf(id);
+        if (orderIdx !== -1) routeBackups.push({ courierId: parseInt(courierId), orderIdx });
+      });
+
+      state.addresses.splice(addrIndex, 1);
+      routeBackups.forEach(({courierId, orderIdx}) => {
         const route = state.routes[courierId];
-        const idx = route.order.indexOf(id);
-        if (idx !== -1){
-          route.order.splice(idx, 1);
-          if (route.order.length){
-            recalcRouteDistance(parseInt(courierId));
-          } else {
-            delete state.routes[courierId];
-          }
+        route.order.splice(orderIdx, 1);
+        if (route.order.length){
+          recalcRouteDistance(courierId);
+        } else {
+          delete state.routes[courierId];
         }
       });
       renderAddresses();
@@ -1447,7 +1514,24 @@ function renderAddresses(){
       renderRouteSummary();
       maybeShowGeocodeButton();
       redrawMap();
-      showToast('Adresă ștearsă.');
+
+      showToast(`Adresă ștearsă: ${label}`, false, {
+        label: 'Anulează',
+        onClick: () => {
+          state.addresses.splice(addrIndex, 0, addr);
+          routeBackups.forEach(({courierId, orderIdx}) => {
+            if (!state.routes[courierId]) state.routes[courierId] = { order: [] };
+            state.routes[courierId].order.splice(orderIdx, 0, id);
+            recalcRouteDistance(courierId);
+          });
+          renderAddresses();
+          renderCouriers();
+          renderRouteSummary();
+          maybeShowGeocodeButton();
+          redrawMap();
+          showToast('Ștergere anulată.');
+        }
+      });
     });
   });
 
