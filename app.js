@@ -3166,9 +3166,7 @@ function renderBulkMoveBar(container){
   bar.style.display = state.routeSelection.size ? 'flex' : 'none';
   bar.innerHTML = `
     <span class="bulk-move-count">${state.routeSelection.size} selectate</span>
-    <select id="bulkMoveTarget" class="rs-courier-select" style="flex:1;">
-      ${state.couriers.map(co => `<option value="${co.id}">${escapeHtml(co.name)}</option>`).join('')}
-    </select>
+    <input type="number" id="bulkMoveTarget" class="bulk-move-input" min="1" placeholder="poziția">
     <button class="btn btn-primary btn-sm" id="bulkMoveBtn">Mută</button>
     <button class="btn-icon" id="bulkMoveClearBtn" title="Anulează selecția">×</button>
   `;
@@ -3228,13 +3226,20 @@ function wireRouteStopControls(container){
     });
   });
 
-  // bulk move bar
+  // bulk move bar — moves the checked addresses to a typed position, within each one's OWN
+  // courier (courier reassignment stays a per-address thing, via the "realoca" dropdown below
+  // each stop — see moveStopToPosition's comment for why this doesn't cross courier lines).
   const bulkBtn = document.getElementById('bulkMoveBtn');
   if (bulkBtn){
     bulkBtn.addEventListener('click', () => {
-      const targetId = parseInt(document.getElementById('bulkMoveTarget').value);
+      const posInput = document.getElementById('bulkMoveTarget');
+      const newPos = parseInt(posInput.value);
+      if (!newPos || isNaN(newPos)){
+        showToast('Scrie o poziție validă.', true);
+        return;
+      }
       const ids = Array.from(state.routeSelection);
-      ids.forEach(id => moveAddressToCourier(id, targetId, { skipRender: true }));
+      moveStopsToPosition(ids, newPos);
       state.routeSelection.clear();
       renderAddresses();
       renderCouriers();
@@ -3859,6 +3864,36 @@ function moveStopToPosition(addrId, newPosition){
   recalcRouteDistance(courierId);
   renderRouteSummary();
   redrawMap();
+}
+
+/**
+ * Bulk version of moveStopToPosition, for the checkbox multi-select bar. Groups the given
+ * address ids by their CURRENT courier and moves each group to newPosition within that same
+ * courier's route, preserving the ids' existing relative order — deliberately never crosses
+ * courier lines (confirmed with the dispatcher: position-typing is a same-courier reorder;
+ * moving to a different courier stays a per-address action via the "realoca" dropdown).
+ * Does not render — caller (the bulkMoveBtn handler) does, matching moveAddressToCourier's convention.
+ */
+function moveStopsToPosition(addrIds, newPosition){
+  const idsByCourtier = {};
+  addrIds.forEach(id => {
+    const courierId = state.addresses.find(a => a.id === id)?.courierId;
+    if (courierId == null) return;
+    if (!idsByCourtier[courierId]) idsByCourtier[courierId] = [];
+    idsByCourtier[courierId].push(id);
+  });
+  Object.keys(idsByCourtier).forEach(courierIdStr => {
+    const courierId = parseInt(courierIdStr);
+    const route = state.routes[courierId];
+    if (!route) return;
+    const movingIds = new Set(idsByCourtier[courierIdStr]);
+    const orderedMoving = route.order.filter(id => movingIds.has(id)); // keep their relative order
+    const remaining = route.order.filter(id => !movingIds.has(id));
+    const insertAt = Math.min(Math.max(1, newPosition), remaining.length + 1) - 1;
+    remaining.splice(insertAt, 0, ...orderedMoving);
+    route.order = remaining;
+    recalcRouteDistance(courierId);
+  });
 }
 
 function enableDragReorder(container, courierId){
