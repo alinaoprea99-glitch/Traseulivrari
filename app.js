@@ -3654,6 +3654,45 @@ async function showSendToCourierModal(courierId){
   }
 
   const warning = courierLinkHostWarning();
+  // Captured BEFORE createCourierRun below, which generates+persists courier.persistentId as a
+  // side effect the first time — this flag has to reflect whether it ALREADY existed, i.e.
+  // whether the courier has (presumably) already installed the permanent link on a past send.
+  const alreadyInstalled = !!courier.persistentId;
+
+  const individualBlockInner = `
+    <div class="qr-wrap" id="courierQrWrap"></div>
+    <div class="loading-row" id="linkLoadingRow" style="justify-content:center; margin-top:10px;"><span class="spinner sp-dark"></span><span>Se generează linkul…</span></div>
+    <div class="link-copy-row" id="linkCopyRow" style="display:none;">
+      <input type="text" id="courierLinkInput" readonly value="">
+      <button class="btn btn-sm" id="copyCourierLinkBtn">Copiază</button>
+    </div>
+    <button class="btn btn-accent btn-sm btn-block" id="waCourierLinkBtn" style="margin-top:10px;" disabled>Trimite pe WhatsApp</button>
+  `;
+  const permanentBlockInner = `
+    <div class="modal-title" style="font-size:14px;">Link permanent — instalează o singură dată</div>
+    <div class="hint" style="margin-bottom:4px;">Curierul deschide acest link O SINGURĂ DATĂ, în Safari (pe iPhone) sau Chrome (pe Android), și îl adaugă pe ecranul principal. De atunci încolo, aplicația instalată arată automat traseul zilei — nu mai trimiți niciun link nou.</div>
+    <div class="link-copy-row" id="persistentLinkCopyRow" style="display:none; margin-top:8px;">
+      <input type="text" id="persistentLinkInput" readonly value="">
+      <button class="btn btn-sm" id="copyPersistentLinkBtn">Copiază</button>
+    </div>
+    <button class="btn btn-accent btn-sm btn-block" id="waPersistentLinkBtn" style="margin-top:10px;" disabled>Trimite pe WhatsApp</button>
+  `;
+  // Once a courier already has a permanent link, resending the individual/QR link every time
+  // is just noise — lead with the permanent link and tuck the individual one away, collapsed.
+  const bodyHtml = alreadyInstalled ? `
+      ${permanentBlockInner}
+      <details id="individualDetails" style="margin-top:16px; border-top:1px solid var(--line); padding-top:12px;">
+        <summary class="addr-toolbar-link" style="cursor:pointer;">Arată și linkul individual (opțional)</summary>
+        <div style="margin-top:10px;">
+          <div class="hint" style="margin-bottom:4px;">Doar dacă vrei să trimiți o privire rapidă, fără instalare — curierul are deja linkul permanent instalat.</div>
+          ${individualBlockInner}
+        </div>
+      </details>
+    ` : `
+      ${individualBlockInner}
+      <div style="border-top:1px solid var(--line); margin:16px 0 12px;"></div>
+      ${permanentBlockInner}
+    `;
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -3662,23 +3701,7 @@ async function showSendToCourierModal(courierId){
       <div class="modal-title">Trimite traseul către ${escapeHtml(courier.name)}</div>
       <div class="hint" style="margin-bottom:4px;">Curierul scanează codul sau deschide link-ul pe telefon — vede opririle lui, în ordine, și poate bifa livrat/nelivrat direct acolo. Bifele și check-in-urile apar live și aici, pe ecranul tău.</div>
       ${warning ? `<div class="hint" style="color:var(--danger); margin-top:8px;">⚠ ${warning}</div>` : ''}
-      <div class="qr-wrap" id="courierQrWrap"></div>
-      <div class="loading-row" id="linkLoadingRow" style="justify-content:center; margin-top:10px;"><span class="spinner sp-dark"></span><span>Se generează linkul…</span></div>
-      <div class="link-copy-row" id="linkCopyRow" style="display:none;">
-        <input type="text" id="courierLinkInput" readonly value="">
-        <button class="btn btn-sm" id="copyCourierLinkBtn">Copiază</button>
-      </div>
-      <button class="btn btn-accent btn-sm btn-block" id="waCourierLinkBtn" style="margin-top:10px;" disabled>Trimite pe WhatsApp</button>
-
-      <div style="border-top:1px solid var(--line); margin:16px 0 12px;"></div>
-      <div class="modal-title" style="font-size:14px;">Link permanent — instalează o singură dată</div>
-      <div class="hint" style="margin-bottom:4px;">Curierul deschide acest link O SINGURĂ DATĂ, în Safari (pe iPhone) sau Chrome (pe Android), și îl adaugă pe ecranul principal. De atunci încolo, aplicația instalată arată automat traseul zilei — nu mai trimiți niciun link nou.</div>
-      <div class="link-copy-row" id="persistentLinkCopyRow" style="display:none; margin-top:8px;">
-        <input type="text" id="persistentLinkInput" readonly value="">
-        <button class="btn btn-sm" id="copyPersistentLinkBtn">Copiază</button>
-      </div>
-      <button class="btn btn-accent btn-sm btn-block" id="waPersistentLinkBtn" style="margin-top:10px;" disabled>Trimite pe WhatsApp</button>
-
+      ${bodyHtml}
       <button class="btn btn-ghost btn-sm btn-block" id="closeCourierModalBtn" style="margin-top:14px;">Închide</button>
     </div>
   `;
