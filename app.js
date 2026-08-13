@@ -3,7 +3,9 @@
 // Geocodare: Nominatim (OpenStreetMap) · Rutare: OSRM (router.project-osrm.org)
 // ===================================================================
 
-const COURIER_COLORS = ['#FF5A1F', '#8B5CF6', '#1D7FBF', '#2D6A4F', '#C2347E', '#B8860B'];
+// 10 distinct hues so a full day's team doesn't start recycling colors between unrelated
+// couriers on the map/legend — the original 6 repeated past a 7th active courier.
+const COURIER_COLORS = ['#FF5A1F', '#8B5CF6', '#1D7FBF', '#2D6A4F', '#C2347E', '#B8860B', '#0E8C7F', '#B23A45', '#3B5FCC', '#8B5E3C'];
 
 const state = {
   couriers: [],      // {id, name, start:{address,lat,lng}, end:{address,lat,lng}, color}
