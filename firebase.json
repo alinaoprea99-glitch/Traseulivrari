@@ -9,5 +9,21 @@
       "codebase": "default",
       "ignore": ["node_modules", ".git", "*.log"]
     }
-  ]
+  ],
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      "firestore.rules",
+      "firestore.indexes.json",
+      ".firebaserc",
+      "**/.*",
+      "**/node_modules/**",
+      "functions/**",
+      "pwa/**",
+      "mac-tools/**",
+      "README.md",
+      "LICENSE"
+    ]
+  }
 }
