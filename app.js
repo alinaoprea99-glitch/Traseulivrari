@@ -46,6 +46,17 @@ document.addEventListener('DOMContentLoaded', () => {
   initAuthGate();
 });
 
+// Every modal (.modal-overlay, created ad-hoc by show*Form/show*Manager functions) already
+// closes on click-outside via `close = () => overlay.remove()` with no other side effects —
+// so Escape can just remove the topmost one generically instead of wiring 7 separate handlers.
+// #loginScreen reuses the same class for styling but must NOT be Escape-dismissible — removing
+// it would strand the user with no login form and no way back in.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const overlays = document.querySelectorAll('.modal-overlay:not(#loginScreen)');
+  if (overlays.length) overlays[overlays.length - 1].remove();
+});
+
 const db = firebase.firestore();
 let firestoreSyncStarted = false;
 
