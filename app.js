@@ -3118,7 +3118,7 @@ function renderRouteSummary(){
       stopEl.innerHTML = `
         <div class="rs-drag-handle" draggable="true" title="Trage pentru a reordona">⠿</div>
         <input type="checkbox" class="rs-checkbox" data-select="${addr.id}" ${isChecked ? 'checked' : ''}>
-        <span class="addr-badge" style="background:${c.color}">${idx + 1}</span>
+        <input type="number" class="rs-pos-input" data-move-to="${addr.id}" style="background:${c.color}" value="${idx + 1}" min="1" max="${route.order.length}" title="Scrie o poziție nouă pentru a muta oprirea">
         <div class="addr-text">
           ${deliveryBadge}
           <div class="addr-main">${titleLine}</div>
@@ -3193,6 +3193,24 @@ function wireRouteStopControls(container){
   });
   container.querySelectorAll('[data-move-down]').forEach(btn => {
     btn.addEventListener('click', () => moveStopByOffset(parseInt(btn.dataset.moveDown), 1));
+  });
+
+  // type-a-number reorder — select-all on focus so typing immediately overwrites
+  container.querySelectorAll('[data-move-to]').forEach(input => {
+    input.addEventListener('focus', () => input.select());
+    input.addEventListener('click', e => e.stopPropagation());
+    input.addEventListener('change', () => {
+      const addrId = parseInt(input.dataset.moveTo);
+      const newPos = parseInt(input.value);
+      if (!newPos || isNaN(newPos)){
+        renderRouteSummary(); // invalid/empty — snap back to the real position
+        return;
+      }
+      moveStopToPosition(addrId, newPos);
+    });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') input.blur(); // triggers the change handler above
+    });
   });
 
   // cancel order — pulls it off the map/route without reordering anything else
@@ -3796,6 +3814,25 @@ function moveStopByOffset(addrId, offset){
   const newIdx = idx + offset;
   if (idx === -1 || newIdx < 0 || newIdx >= route.order.length) return;
   [route.order[idx], route.order[newIdx]] = [route.order[newIdx], route.order[idx]];
+  recalcRouteDistance(courierId);
+  renderRouteSummary();
+  redrawMap();
+}
+
+// newPosition is 1-based, as typed by the dispatcher into the position badge.
+function moveStopToPosition(addrId, newPosition){
+  const courierId = state.addresses.find(a => a.id === addrId)?.courierId;
+  const route = state.routes[courierId];
+  if (!route) return;
+  const idx = route.order.indexOf(addrId);
+  if (idx === -1) return;
+  const targetIdx = Math.min(Math.max(1, newPosition), route.order.length) - 1;
+  if (targetIdx === idx){
+    renderRouteSummary(); // e.g. typed the same number — just snap the input back to a clean state
+    return;
+  }
+  route.order.splice(idx, 1);
+  route.order.splice(targetIdx, 0, addrId);
   recalcRouteDistance(courierId);
   renderRouteSummary();
   redrawMap();

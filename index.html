@@ -74,7 +74,7 @@ body{
 
 .app{
   display:grid;
-  grid-template-columns: 420px 1fr;
+  grid-template-columns: 700px 1fr;
   height:100vh;
 }
 
@@ -535,6 +535,23 @@ input[type=file]{display:none;}
   display:flex;align-items:center;justify-content:center;
   margin-top:1px;
 }
+.rs-pos-input{
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif; font-variant-numeric:tabular-nums;
+  font-size:11px;
+  font-weight:700;
+  color:var(--white);
+  border:none;
+  border-radius:6px;
+  width:26px; height:20px;
+  flex-shrink:0;
+  margin-top:1px;
+  text-align:center;
+  padding:0;
+  cursor:pointer;
+  -moz-appearance:textfield;
+}
+.rs-pos-input::-webkit-outer-spin-button, .rs-pos-input::-webkit-inner-spin-button{-webkit-appearance:none; margin:0;}
+.rs-pos-input:focus{outline:2px solid var(--ink); outline-offset:1px; cursor:text;}
 .addr-item .addr-text{flex:1; min-width:0;}
 .addr-item .addr-main{font-weight:500;}
 .addr-item .addr-status{
