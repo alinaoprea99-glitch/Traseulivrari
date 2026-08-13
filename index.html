@@ -864,6 +864,14 @@ input[type=file]{display:none;}
   background:var(--paper);
 }
 .action-bar .btn{flex:1;}
+.action-bar-label{
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;
+  font-size:10.5px;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:0.07em;
+  color:var(--ink-faint);
+}
 
 /* ===== MAP ===== */
 .map-wrap{position:relative; height:100%;}
@@ -1046,7 +1054,10 @@ input[type=file]{display:none;}
         <span class="label">Trasee curieri</span>
       </div>
       <div class="brand-sub" id="dateStamp">Manifest de livrare</div>
-      <button class="btn btn-ghost btn-sm" id="logoutBtn" style="margin-top:8px;" title="Deconectare">Deconectare</button>
+      <div style="display:flex; gap:6px; margin-top:8px;">
+        <button class="btn btn-ghost btn-sm" id="logoutBtn" style="flex:1;" title="Deconectare">Deconectare</button>
+        <button class="btn btn-ghost btn-sm" id="resetBtn" style="flex:1; color:var(--danger); border-color:var(--line);" title="Șterge curieri, adrese și trasee — pornește o zi nouă de la zero">Resetează tot</button>
+      </div>
     </div>
 
     <div class="tabs">
@@ -1128,16 +1139,17 @@ input[type=file]{display:none;}
       </div>
     </div>
 
-    <div class="action-bar" style="border-top:none; padding-bottom:0;">
-      <button class="btn btn-ghost btn-sm" id="saveStateBtn" style="display:flex; align-items:center; justify-content:center; gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg> Salvează starea</button>
-      <button class="btn btn-ghost btn-sm" id="loadStateBtn" style="display:flex; align-items:center; justify-content:center; gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg> Încarcă stare</button>
+    <div class="action-bar" style="border-top:none; padding-bottom:0; flex-direction:column; gap:6px; align-items:stretch;">
+      <div class="action-bar-label">Backup local</div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="saveStateBtn" style="flex:1; display:flex; align-items:center; justify-content:center; gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg> Salvează starea</button>
+        <button class="btn btn-ghost btn-sm" id="loadStateBtn" style="flex:1; display:flex; align-items:center; justify-content:center; gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg> Încarcă stare</button>
+      </div>
       <input type="file" id="loadStateInput" accept="application/json" style="display:none;">
     </div>
-    <div class="action-bar" style="border-top:none; padding-bottom:0;">
+    <div class="action-bar" style="flex-direction:column; gap:8px; align-items:stretch;">
+      <div class="action-bar-label">Pasul final</div>
       <button class="btn btn-accent btn-sm btn-block" id="generateMessagesBtn" disabled>Mesaje clienți</button>
-    </div>
-    <div class="action-bar">
-      <button class="btn btn-ghost" id="resetBtn">Resetează tot</button>
       <button class="btn btn-primary" id="exportBtn" disabled>Exportă trasee (Excel)</button>
     </div>
   </div>
