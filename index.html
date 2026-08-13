@@ -74,7 +74,7 @@ body{
 
 .app{
   display:grid;
-  grid-template-columns: 700px 1fr;
+  grid-template-columns: 480px 1fr;
   height:100vh;
 }
 
@@ -223,22 +223,26 @@ body{
 }
 .btn-icon:hover{border-color:var(--danger); color:var(--danger); background:var(--warn-soft);}
 
-/* ---- upload zone ---- */
+/* ---- upload zone (compact button — still accepts drag&drop, see initAddressPanel) ---- */
 .dropzone{
   border:1.5px dashed var(--line);
   border-radius:var(--radius);
-  padding:24px 16px;
+  padding:9px 12px;
   text-align:center;
   cursor:pointer;
   transition:border-color .15s, background .15s;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
 }
 .dropzone:hover, .dropzone.drag{
   border-color:var(--route);
   background:var(--route-soft);
 }
-.dropzone .dz-icon{font-size:22px; margin-bottom:6px;}
-.dropzone .dz-title{font-weight:600; font-size:13px;}
-.dropzone .dz-sub{font-size:11.5px; color:var(--ink-soft); margin-top:3px;}
+.dropzone .dz-icon{font-size:15px; display:flex;}
+.dropzone .dz-title{font-weight:600; font-size:12.5px;}
+.dropzone .dz-sub{display:none;}
 input[type=file]{display:none;}
 
 .addr-toolbar-row{
@@ -1100,10 +1104,9 @@ input[type=file]{display:none;}
     <div class="panel" id="panel-adrese">
       <div style="flex-shrink:0;">
         <div class="section" style="padding-bottom:10px;">
-          <div class="dropzone" id="dropzone" style="padding:14px 12px;">
-            <div class="dz-icon" style="margin-bottom:5px;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></div>
-            <div class="dz-title" style="font-size:13px;">Trage fișierul aici sau apasă</div>
-            <div class="dz-sub" style="font-size:10.5px;">CSV sau XLSX · nume, telefon, adresă, sumă, plată</div>
+          <div class="dropzone" id="dropzone" title="CSV sau XLSX · nume, telefon, adresă, sumă, plată">
+            <span class="dz-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></span>
+            <span class="dz-title">Încarcă fișier (CSV/XLSX)</span>
           </div>
           <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
           <div id="geocodeSection" style="display:none;">
@@ -1144,8 +1147,10 @@ input[type=file]{display:none;}
         <div class="section-title"><span>Repartiție</span></div>
         <button class="btn btn-accent btn-block" id="autoAssignBtn">Repartizează automat</button>
         <div class="hint">Adresele se împart pe curieri în funcție de proximitate geografică. Poți rearanja manual mai jos.</div>
-        <button class="btn btn-ghost btn-block btn-sm" id="resetRoutesBtn" style="margin-top:8px; color:var(--danger); border-color:var(--line);">Resetează trasee</button>
-        <button class="btn btn-ghost btn-block btn-sm" id="historyBtn" style="margin-top:6px; display:flex; align-items:center; justify-content:center; gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg> Istoric trasee generate</button>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <button class="btn btn-ghost btn-sm" id="resetRoutesBtn" style="flex:1; color:var(--danger); border-color:var(--line);">Resetează trasee</button>
+          <button class="btn btn-ghost btn-sm" id="historyBtn" style="flex:1; display:flex; align-items:center; justify-content:center; gap:5px;" title="Istoric trasee generate"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg> Istoric</button>
+        </div>
       </div>
       <div class="section" style="flex:1; overflow-y:auto; min-height:0;" id="routeSummary">
         <div class="empty-state">
