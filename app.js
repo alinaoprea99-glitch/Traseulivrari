@@ -175,6 +175,7 @@ function initFirestoreSync(){
     renderRouteSummary();
     applyingRemoteSnapshot = false;
     redrawMap();
+    updateExportButtonsState();
     syncCourierRunListeners();
   }, (err) => console.error('Nu am putut sincroniza traseele', err));
 }
