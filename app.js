@@ -2738,6 +2738,24 @@ function buildLegGeometries(routeData, orderedIds){
   return legs;
 }
 
+/**
+ * computeOptimizedRoute/fallbackRoute replace state.routes[courierId] with a plain freshly-
+ * computed object — before this existed, that silently dropped courierRunId/stopIds/clientIds
+ * for a courier whose route had ALREADY been sent (e.g. re-running "Repartizează automat"
+ * after adding one new address, which re-routes every courier, not just the one that changed).
+ * ensureCourierRun only resyncs the existing run (preserving each stop's live clientConfirmed/
+ * clientNote) when it finds a courierRunId+stopIds already on the route — losing them made it
+ * silently create a brand-new run instead, wiping every client's confirmation from the
+ * courier's view even though the dispatcher's own UI still showed it (that part reads from
+ * state.addresses, untouched by route recomputation, which is why only the courier's side
+ * looked wrong).
+ */
+function sentRunFieldsToCarryForward(courierId){
+  const prev = state.routes[courierId];
+  if (!prev || !prev.courierRunId) return {};
+  return { courierRunId: prev.courierRunId, stopIds: prev.stopIds, clientIds: prev.clientIds };
+}
+
 async function computeOptimizedRoute(courier, stops){
   const end = courier.sameAsStart || courier.end.status !== 'ok' ? courier.start : courier.end;
   const points = [courier.start, ...stops.map(s => ({lat:s.lat,lng:s.lng})), end];
@@ -2793,7 +2811,8 @@ async function computeOptimizedRoute(courier, stops){
       totalMin,
       geometry,
       legGeometries,
-      legDurationsMin
+      legDurationsMin,
+      ...sentRunFieldsToCarryForward(courier.id)
     };
     computeDeliveryWindows(courier, state.routes[courier.id]);
   } catch (e){
@@ -2956,7 +2975,8 @@ function fallbackRoute(courier, stops, end){
     totalKm,
     totalMin: totalKm / AVG_SPEED_KMH * 60,
     geometry: null,
-    legDurationsMin
+    legDurationsMin,
+    ...sentRunFieldsToCarryForward(courier.id)
   };
   computeDeliveryWindows(courier, state.routes[courier.id]);
   showToast(`Traseu pentru ${courier.name}: estimare aproximativă (serviciul de rutare a fost indisponibil).`, true);
