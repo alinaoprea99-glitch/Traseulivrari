@@ -678,9 +678,12 @@ function showVerifiedDbManager(){
           </div>
         `).join('') : '<div class="hint">Baza este goală — nu există încă adrese salvate.</div>'}
       </div>
-      <div style="display:flex; gap:6px; margin-top:14px;">
+      <div style="display:flex; gap:6px; margin-top:14px; flex-wrap:wrap;">
         <button class="btn btn-ghost btn-sm" id="vdbCloseBtn" style="flex:1;">Închide</button>
-        ${entries.length ? '<button class="btn btn-sm" id="vdbClearAllBtn" style="flex:1; border-color:var(--danger); color:var(--danger);">Șterge tot</button>' : ''}
+        <button class="btn btn-ghost btn-sm" id="vdbExportBtn" style="flex:1;">↓ Exportă</button>
+        <button class="btn btn-ghost btn-sm" id="vdbImportBtn" style="flex:1;">↑ Importă</button>
+        <input type="file" id="vdbImportInput" accept="application/json" style="display:none;">
+        ${entries.length ? '<button class="btn btn-sm" id="vdbClearAllBtn" style="flex:1 1 100%; border-color:var(--danger); color:var(--danger);">Șterge tot</button>' : ''}
       </div>
     </div>
   `;
@@ -709,6 +712,46 @@ function showVerifiedDbManager(){
       close();
     });
   }
+
+  // Export/import as a JSON file — this DB lives in localStorage, which is per-DOMAIN, so it
+  // doesn't carry over on its own when the app moves to a new hosting URL (e.g. GitHub Pages
+  // -> Firebase Hosting): export from the old origin, import here on the new one.
+  document.getElementById('vdbExportBtn').addEventListener('click', () => {
+    const fullDb = loadVerifiedAddressDB();
+    const blob = new Blob([JSON.stringify(fullDb, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `adrese-verificate_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Bază de adrese exportată.');
+  });
+
+  const importInput = document.getElementById('vdbImportInput');
+  document.getElementById('vdbImportBtn').addEventListener('click', () => importInput.click());
+  importInput.addEventListener('change', () => {
+    const file = importInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const imported = JSON.parse(reader.result);
+        if (!imported || typeof imported !== 'object' || Array.isArray(imported)) throw new Error('format invalid');
+        const current = loadVerifiedAddressDB();
+        const merged = { ...current, ...imported }; // imported entries win on key collisions
+        saveVerifiedAddressDB(merged);
+        updateVerifiedDbCounter();
+        showToast(`${Object.keys(imported).length} adrese importate (total acum: ${Object.keys(merged).length}).`);
+        close();
+        showVerifiedDbManager();
+      } catch (e){
+        showToast('Fișierul nu e valid — exportă din nou din pagina veche și încearcă din nou.', true);
+      }
+    };
+    reader.readAsText(file);
+    importInput.value = '';
+  });
 }
 
 function showEditAddressForm(addrId){

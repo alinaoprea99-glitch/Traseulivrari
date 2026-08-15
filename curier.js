@@ -307,8 +307,19 @@ function numberedIcon(number, color){
   });
 }
 
+// Compared against on every call so a snapshot that only changed courierRuns.lastPos (the
+// courier's own GPS echoing back through Firestore, which can fire every few seconds while
+// driving) doesn't touch the markers at all — clearLayers()+rebuild was destroying whatever
+// popup the courier had open (killing an in-flight ETA calculation, see updatePopupEta) and
+// re-running fitBounds was constantly snapping the viewport back to the stops, which is what
+// looked like the courier's own position pin flickering in/out of view.
+let lastMarkersSignature = null;
+
 function updateMapMarkers(){
   if (!markersLayer || !payload) return;
+  const signature = JSON.stringify(payload.stops.map(s => [s.id, s.lat, s.lng, statuses[s.id] || 'pending']));
+  if (signature === lastMarkersSignature) return;
+  lastMarkersSignature = signature;
   markersLayer.clearLayers();
   const bounds = [];
   payload.stops.forEach(s => {
