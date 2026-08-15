@@ -4462,10 +4462,15 @@ function formatWindowForMessage(win){
   return `${win.windowStart.replace(':', '.')} - ${win.windowEnd.replace(':', '.')}`;
 }
 
+// Deliberately no emoji here — they force UCS-2 SMS encoding (70 chars/segment instead of
+// 160), so a message this long splits into 6-7 segments instead of ~4. Some phones fail to
+// cleanly reassemble the link across a segment boundary and show it as plain, unclickable
+// text — confirmed on real deliveries. Plain GSM-7 halves the segment count and avoids the
+// Unicode-encoding path most likely to trip that up.
 function buildDeliveryMessage(name, dayPhrase, windowText, clientLink){
   const greeting = name ? `Buna ${name},` : 'Buna,';
-  const linkLine = clientLink ? `\n\n📍 Click aici sa confirmi, sa urmaresti livrarea in timp real si sa vezi istoricul comenzilor:\n${clientLink}` : '';
-  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${linkLine}\n\n🍒Te rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
+  const linkLine = clientLink ? `\n\nClick aici sa confirmi, sa urmaresti livrarea in timp real si sa vezi istoricul comenzilor:\n${clientLink}` : '';
+  return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${linkLine}\n\nTe rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 
 /** All non-cancelled stops that are part of a generated route and have a computed delivery window. */
@@ -4500,7 +4505,7 @@ async function showGenerateMessagesModal(){
       <div class="hint" style="margin-bottom:10px;">Verifică prenumele detectat pentru fiecare client — clienții nu completează mereu corect câmpurile de nume la comandă. Corectează direct în casetă dacă e greșit, apoi descarcă fișierul pentru trimitere automată prin Messages.</div>
       <div class="field" style="margin-bottom:10px; max-width:160px;">
         <label>Ziua livrării</label>
-        <input type="text" id="gmDayPhrase" value="mâine">
+        <input type="text" id="gmDayPhrase" value="maine">
       </div>
       <div id="gmRows" style="max-height:42vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
         <div class="loading-row" id="gmLoadingRow" style="justify-content:center;"><span class="spinner sp-dark"></span><span>Se pregătesc linkurile de urmărire…</span></div>
