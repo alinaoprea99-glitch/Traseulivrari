@@ -2854,23 +2854,36 @@ async function computeOptimizedRoute(courier, stops){
     const orderedPoints = optimizedOrder.map(idx => points[idx]);
     const routeCoordStr = orderedPoints.map(p => `${p.lng},${p.lat}`).join(';');
     let geometry = null, legGeometries = null, totalKm = null;
-    try {
-      const routeUrl = `https://router.project-osrm.org/route/v1/driving/${routeCoordStr}?overview=full&geometries=geojson&steps=true`;
-      const routeRes = await fetch(routeUrl);
-      const routeData = await routeRes.json();
-      if (routeData.code === 'Ok' && routeData.routes && routeData.routes.length){
-        geometry = routeData.routes[0].geometry;
-        legGeometries = buildLegGeometries(routeData, orderedIds);
-        totalKm = routeData.routes[0].distance / 1000;
+    // The public OSRM demo server's /route endpoint is noticeably flakier than /table under
+    // repeated quick calls (e.g. re-running "Repartizează automat" a few times while testing)
+    // — a non-'Ok' response here used to fail SILENTLY (fetch doesn't throw on HTTP 4xx, so the
+    // catch below never saw it, and there was no toast either): the courier still got a route,
+    // just with the straight-line dashed fallback instead of the real road geometry, with no
+    // indication why. One retry recovers most of the time; a toast covers the rest.
+    for (let attempt = 0; attempt < 2 && geometry == null; attempt++){
+      if (attempt > 0) await new Promise(r => setTimeout(r, 800));
+      try {
+        const routeUrl = `https://router.project-osrm.org/route/v1/driving/${routeCoordStr}?overview=full&geometries=geojson&steps=true`;
+        const routeRes = await fetch(routeUrl);
+        const routeData = await routeRes.json();
+        if (routeData.code === 'Ok' && routeData.routes && routeData.routes.length){
+          geometry = routeData.routes[0].geometry;
+          legGeometries = buildLegGeometries(routeData, orderedIds);
+          totalKm = routeData.routes[0].distance / 1000;
+        } else {
+          console.error('OSRM route geometry request returned', routeData.code, routeRes.status);
+        }
+      } catch (e){
+        console.error('OSRM route geometry fetch failed', e);
       }
-    } catch (e){
-      console.error('OSRM route geometry fetch failed', e);
     }
     if (totalKm == null){
-      // Route Service failed but we still have real driving times from the Table Service —
-      // approximate distance from time at a typical urban average so the UI never crashes
-      // on a null totalKm, and geometry simply stays unavailable (straight-line fallback draw)
+      // Route Service failed (both attempts) but we still have real driving times from the
+      // Table Service — approximate distance from time at a typical urban average so the UI
+      // never crashes on a null totalKm, and geometry stays unavailable (straight-line dashed
+      // fallback draw) — but now the dispatcher is actually told, instead of it being silent.
       totalKm = totalMin / 60 * 35;
+      showToast(`${courier.name}: traseul afișat e o aproximare (linie punctată) — serviciul de rutare nu a răspuns pentru geometria exactă.`, true);
     }
 
     const finalOrder = applyPinnedPositions(orderedIds);
@@ -2883,11 +2896,12 @@ async function computeOptimizedRoute(courier, stops){
       legDurationsMin,
       ...sentRunFieldsToCarryForward(courier.id)
     };
-    // totalKm/totalMin/geometry above are for the OSRM-optimized order — if a pin actually
-    // moved something, refresh the totals for the real final order (straight-line estimate,
-    // same approximation manual drag-reorder already uses elsewhere; not worth a second OSRM
-    // round trip just for this).
-    if (finalOrder.join() !== orderedIds.join()) recalcRouteDistance(courier.id);
+    // Deliberately NOT recalcRouteDistance() here even if a pin moved something — that
+    // function nulls out geometry/legGeometries as its own straight-line-fallback contract
+    // (correct for a quick manual drag with no fresh OSRM data, wrong here: it would throw
+    // away the real road geometry we just successfully fetched, for the sake of slightly
+    // more precise totals). totalKm/totalMin/windows stay a close approximation for the
+    // handful of stops next to a pin — the real map line is worth far more than that.
     computeDeliveryWindows(courier, state.routes[courier.id]);
   } catch (e){
     console.error('Route optimization error', e);
