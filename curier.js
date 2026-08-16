@@ -472,7 +472,11 @@ async function updatePopupEta(stop, marker){
     const el = popup.getElement() && popup.getElement().querySelector('.popup-eta');
     if (!el) return;
     el.innerHTML = html;
-    popup.update();
+    // NOT popup.update() — that re-renders Leaflet's OWN stored _content (the popup's
+    // original bindPopup() template, "Se calculează…" included) over whatever we just wrote,
+    // silently undoing this exact mutation. Confirmed: every ETA result was being computed
+    // correctly and immediately erased back to "Se calculează…" by this one call — the popup
+    // never actually showed a wrong answer, it just always reverted before being seen.
   };
 
   if (!lastKnownPos){
