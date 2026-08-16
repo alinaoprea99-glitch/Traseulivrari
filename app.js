@@ -1312,6 +1312,7 @@ function addAddress(data){
     allowOutOfArea: false,   // true if the user explicitly opted in to allow this address outside the service area
     courierId: data.courierId ?? null,
     manuallyAssigned: data.manuallyAssigned ?? false, // true once the courier was set explicitly (reassign dropdown, or a recovered courier-column import)
+    pinnedPosition: data.pinnedPosition ?? null, // 1-based position within its courier's route, set once reordered manually — "Repartizează automat" restores it here after recomputing (see applyPinnedPositions)
     cancelled: data.cancelled ?? false // order cancelled after routes/time windows were already communicated — pulled off the map/route but kept as a record, not deleted
   };
   state.addresses.push(addr);
@@ -1494,6 +1495,7 @@ function renderAddresses(){
       if (newCourierId === oldCourierId) return;
       addr.courierId = newCourierId;
       addr.manuallyAssigned = newCourierId != null; // unassigning (—) clears the manual lock too
+      addr.pinnedPosition = null; // a pinned slot only means something within the courier it was set for
 
       // pull this address out of any existing route (old courier), and append it to the
       // new courier's route order if that courier already has an active route
@@ -2793,6 +2795,29 @@ function buildLegGeometries(routeData, orderedIds){
  * state.addresses, untouched by route recomputation, which is why only the courier's side
  * looked wrong).
  */
+/**
+ * Forces addresses with a pinnedPosition (set by a manual reorder — see moveStopToPosition/
+ * moveStopsToPosition/moveStopByOffset/reorderStop) back to their recorded slot after
+ * "Repartizează automat" recomputes the optimal order from scratch — the position equivalent
+ * of manuallyAssigned locking a courier: the dispatcher put it there on purpose, auto-routing
+ * shouldn't quietly move it again. Pinned addresses are reinserted in ascending target-position
+ * order so multiple pins on one route land predictably rather than fighting over the same slot.
+ */
+function applyPinnedPositions(order){
+  const pinned = order
+    .map(id => state.addresses.find(a => a.id === id))
+    .filter(a => a && a.pinnedPosition != null)
+    .sort((a, b) => a.pinnedPosition - b.pinnedPosition);
+  if (!pinned.length) return order;
+
+  const result = order.filter(id => !pinned.some(p => p.id === id));
+  pinned.forEach(addr => {
+    const idx = Math.min(Math.max(1, addr.pinnedPosition), result.length + 1) - 1;
+    result.splice(idx, 0, addr.id);
+  });
+  return result;
+}
+
 function sentRunFieldsToCarryForward(courierId){
   const prev = state.routes[courierId];
   if (!prev || !prev.courierRunId) return {};
@@ -2848,8 +2873,9 @@ async function computeOptimizedRoute(courier, stops){
       totalKm = totalMin / 60 * 35;
     }
 
+    const finalOrder = applyPinnedPositions(orderedIds);
     state.routes[courier.id] = {
-      order: orderedIds,
+      order: finalOrder,
       totalKm,
       totalMin,
       geometry,
@@ -2857,6 +2883,11 @@ async function computeOptimizedRoute(courier, stops){
       legDurationsMin,
       ...sentRunFieldsToCarryForward(courier.id)
     };
+    // totalKm/totalMin/geometry above are for the OSRM-optimized order — if a pin actually
+    // moved something, refresh the totals for the real final order (straight-line estimate,
+    // same approximation manual drag-reorder already uses elsewhere; not worth a second OSRM
+    // round trip just for this).
+    if (finalOrder.join() !== orderedIds.join()) recalcRouteDistance(courier.id);
     computeDeliveryWindows(courier, state.routes[courier.id]);
   } catch (e){
     console.error('Route optimization error', e);
@@ -3013,14 +3044,16 @@ function fallbackRoute(courier, stops, end){
   totalKm += lastLegKm;
   legDurationsMin.push(lastLegKm / AVG_SPEED_KMH * 60);
 
+  const finalOrder = applyPinnedPositions(order);
   state.routes[courier.id] = {
-    order,
+    order: finalOrder,
     totalKm,
     totalMin: totalKm / AVG_SPEED_KMH * 60,
     geometry: null,
     legDurationsMin,
     ...sentRunFieldsToCarryForward(courier.id)
   };
+  if (finalOrder.join() !== order.join()) recalcRouteDistance(courier.id);
   computeDeliveryWindows(courier, state.routes[courier.id]);
   showToast(`Traseu pentru ${courier.name}: estimare aproximativă (serviciul de rutare a fost indisponibil).`, true);
 }
@@ -3183,6 +3216,7 @@ function renderRouteSummary(){
         <div class="rs-drag-handle" draggable="true" title="Trage pentru a reordona">⠿</div>
         <input type="checkbox" class="rs-checkbox" data-select="${addr.id}" ${isChecked ? 'checked' : ''}>
         <input type="number" class="rs-pos-input" data-move-to="${addr.id}" style="background:${c.color}" value="${idx + 1}" min="1" max="${route.order.length}" title="Scrie o poziție nouă pentru a muta oprirea">
+        ${addr.pinnedPosition != null ? `<button class="addr-lock-badge" data-unpin-position="${addr.id}" title="Poziție fixată manual — nu va fi schimbată de repartizarea automată. Click ca s-o deblochezi.">${ICONS.lock}</button>` : ''}
         <div class="addr-text">
           ${deliveryBadge}
           <div class="addr-main">${titleLine}</div>
@@ -3272,6 +3306,18 @@ function wireRouteStopControls(container){
     });
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') input.blur(); // triggers the change handler above
+    });
+  });
+
+  // unpin — lets "Repartizează automat" move this stop again
+  container.querySelectorAll('[data-unpin-position]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const addr = state.addresses.find(a => a.id === parseInt(btn.dataset.unpinPosition));
+      if (!addr) return;
+      addr.pinnedPosition = null;
+      renderRouteSummary();
+      showToast('Poziția nu mai e fixată — poate fi mutată de repartizarea automată.');
     });
   });
 
@@ -3861,6 +3907,7 @@ function moveAddressToCourier(addrId, newCourierId, opts = {}){
 
   addr.courierId = newCourierId;
   addr.manuallyAssigned = true;
+  addr.pinnedPosition = null; // a pinned slot only means something within the courier it was set for
 
   [oldCourierId, newCourierId].forEach(cid => {
     if (cid == null) return;
@@ -3906,6 +3953,8 @@ function moveStopByOffset(addrId, offset){
   const newIdx = idx + offset;
   if (idx === -1 || newIdx < 0 || newIdx >= route.order.length) return;
   [route.order[idx], route.order[newIdx]] = [route.order[newIdx], route.order[idx]];
+  const addr = state.addresses.find(a => a.id === addrId);
+  if (addr) addr.pinnedPosition = newIdx + 1; // see applyPinnedPositions — survives the next "Repartizează automat"
   recalcRouteDistance(courierId);
   renderRouteSummary();
   redrawMap();
@@ -3919,6 +3968,8 @@ function moveStopToPosition(addrId, newPosition){
   const idx = route.order.indexOf(addrId);
   if (idx === -1) return;
   const targetIdx = Math.min(Math.max(1, newPosition), route.order.length) - 1;
+  const addr = state.addresses.find(a => a.id === addrId);
+  if (addr) addr.pinnedPosition = targetIdx + 1; // see applyPinnedPositions — survives the next "Repartizează automat"
   if (targetIdx === idx){
     renderRouteSummary(); // e.g. typed the same number — just snap the input back to a clean state
     return;
@@ -3956,6 +4007,10 @@ function moveStopsToPosition(addrIds, newPosition){
     const insertAt = Math.min(Math.max(1, newPosition), remaining.length + 1) - 1;
     remaining.splice(insertAt, 0, ...orderedMoving);
     route.order = remaining;
+    orderedMoving.forEach((id, i) => {
+      const addr = state.addresses.find(a => a.id === id);
+      if (addr) addr.pinnedPosition = insertAt + 1 + i; // see applyPinnedPositions — survives the next "Repartizează automat"
+    });
     recalcRouteDistance(courierId);
   });
 }
@@ -3996,6 +4051,8 @@ function reorderStop(courierId, draggedId, targetId){
   if (fromIdx === -1 || toIdx === -1) return;
   route.order.splice(fromIdx, 1);
   route.order.splice(toIdx, 0, draggedId);
+  const addr = state.addresses.find(a => a.id === draggedId);
+  if (addr) addr.pinnedPosition = toIdx + 1; // see applyPinnedPositions — survives the next "Repartizează automat"
   recalcRouteDistance(courierId);
   renderRouteSummary();
   redrawMap();

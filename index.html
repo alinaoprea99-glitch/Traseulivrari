@@ -713,8 +713,13 @@ input[type=file]{display:none;}
   cursor:help;
   display:inline-flex;
   align-items:center;
+  border:none;
+  background:none;
+  padding:0;
 }
 .addr-lock-badge svg{width:12px; height:12px; color:var(--ink-faint);}
+button.addr-lock-badge{cursor:pointer;}
+button.addr-lock-badge:hover svg{color:var(--danger);}
 .addr-action-link svg{width:11px; height:11px; vertical-align:-1.5px; margin-right:2px;}
 
 .modal-overlay{
