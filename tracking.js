@@ -84,8 +84,9 @@ let routeLineLayer = null;
 function initMapIfNeeded(){
   if (trackMap) return;
   trackMap = L.map('trackMap', { zoomControl: true, attributionControl: false });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    maxZoom: 19
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap contributors'
   }).addTo(trackMap);
   routeLineLayer = L.layerGroup().addTo(trackMap);
 }
