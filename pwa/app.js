@@ -1564,8 +1564,96 @@ function normalizeCityForGeocoding(city){
   return trimmed;
 }
 
+// Localities Nominatim needs to match exactly — a misspelled town name (missing/wrong diacritic,
+// dropped or extra "ul"/"u" suffix, etc.) makes the ENTIRE address unfindable even when the street
+// is correct, since Nominatim doesn't do fuzzy matching on locality names. Scoped to București,
+// all of Ilfov, and the județ-reședință towns that fall inside SERVICE_AREA_BOUNDS, since those are
+// the only localities a corrected result could actually land in-area for.
+const KNOWN_LOCALITIES = [
+  'București',
+  'Sector 1', 'Sector 2', 'Sector 3', 'Sector 4', 'Sector 5', 'Sector 6',
+  // Ilfov — orașe
+  'Buftea', 'Chitila', 'Măgurele', 'Otopeni', 'Pantelimon', 'Popești-Leordeni', 'Voluntari', 'Bragadiru',
+  // Ilfov — comune
+  'Afumați', 'Baloteşti', 'Berceni', 'Brănești', 'Cernica', 'Chiajna', 'Ciolpani', 'Ciorogârla',
+  'Clinceni', 'Copăceni', 'Corbeanca', 'Cornetu', 'Dărăști-Ilfov', 'Dascălu', 'Dobroești', 'Domnești',
+  'Dragomirești-Vale', 'Găneasa', 'Glina', 'Grădiștea', 'Gruiu', 'Jilava', 'Moara Vlăsiei', 'Mogoșoaia',
+  'Nuci', 'Periș', 'Petrăchioaia', 'Snagov', 'Ștefăneștii de Jos', 'Tunari', 'Vidra', '1 Decembrie',
+  // județ-reședință / orașe mari din zona limitrofă (SERVICE_AREA_BOUNDS)
+  'Ploiești', 'Târgoviște', 'Giurgiu', 'Alexandria', 'Slobozia', 'Călărași', 'Urziceni', 'Fetești',
+];
+
+function stripDiacritics(str){
+  return str.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ș/gi, 's').replace(/ț/gi, 't');
+}
+
+function levenshteinDistance(a, b){
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prevRow = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++){
+    const currRow = [i];
+    for (let j = 1; j <= n; j++){
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      currRow.push(Math.min(
+        prevRow[j] + 1,      // deletion
+        currRow[j - 1] + 1,  // insertion
+        prevRow[j - 1] + cost // substitution
+      ));
+    }
+    prevRow = currRow;
+  }
+  return prevRow[n];
+}
+
+/**
+ * Fuzzy-corrects a locality name against KNOWN_LOCALITIES (diacritic/case-insensitive), tolerating
+ * up to 1 typo for short names and 2 for longer ones. Returns the canonical spelling if a confident
+ * unique match is found, otherwise the original text untouched.
+ */
+function correctLocalityName(name){
+  const trimmed = name.trim();
+  if (!trimmed) return trimmed;
+  const normalized = stripDiacritics(trimmed).toLowerCase();
+  const maxDist = normalized.length >= 6 ? 2 : 1;
+
+  let best = null;
+  let bestDist = Infinity;
+  let tie = false;
+  for (const locality of KNOWN_LOCALITIES){
+    const normLocality = stripDiacritics(locality).toLowerCase();
+    if (normLocality === normalized) return locality; // already correct, just re-cased/re-diacritic'd
+    const dist = levenshteinDistance(normalized, normLocality);
+    if (dist < bestDist){
+      bestDist = dist;
+      best = locality;
+      tie = false;
+    } else if (dist === bestDist){
+      tie = true;
+    }
+  }
+  if (best && !tie && bestDist <= maxDist) return best;
+  return trimmed;
+}
+
+/** Applies correctLocalityName to every comma-separated segment except the first (street+number) and "România". */
+function correctLocalityTypos(address){
+  const segments = address.split(',').map(s => s.trim());
+  if (segments.length < 2) return address;
+  const corrected = segments.map((seg, i) => {
+    if (i === 0 || /^rom[aâ]nia$/i.test(seg)) return seg;
+    return correctLocalityName(seg);
+  });
+  return corrected.join(', ');
+}
+
 function buildAddressVariants(address){
   const variants = [address];
+
+  const typoCorrected = correctLocalityTypos(address);
+  if (typoCorrected !== address) variants.push(typoCorrected);
+
   const ROAD_PREFIXES = ['Șoseaua', 'Strada', 'Bulevardul', 'Calea', 'Aleea', 'Drumul'];
 
   // if address has no known road-type prefix on its street segment, try adding common ones
