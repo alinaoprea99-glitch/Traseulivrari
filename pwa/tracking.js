@@ -85,7 +85,7 @@ function initMapIfNeeded(){
   if (trackMap) return;
   trackMap = L.map('trackMap', { zoomControl: true, attributionControl: false });
   L.maplibreGL({
-    style: 'https://tiles.openfreemap.org/styles/positron',
+    style: 'https://tiles.openfreemap.org/styles/liberty',
     attribution: '© OpenStreetMap contributors © OpenFreeMap'
   }).addTo(trackMap);
   routeLineLayer = L.layerGroup().addTo(trackMap);

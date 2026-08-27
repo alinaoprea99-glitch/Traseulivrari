@@ -216,7 +216,7 @@ function showToast(msg, isError=false, action=null){
 function initMap(){
   map = L.map('map', { zoomControl:true }).setView([45.9432, 24.9668], 7); // Romania default
   L.maplibreGL({
-    style: 'https://tiles.openfreemap.org/styles/positron',
+    style: 'https://tiles.openfreemap.org/styles/liberty',
     attribution: '© OpenStreetMap contributors © OpenFreeMap'
   }).addTo(map);
   markersLayer = L.layerGroup().addTo(map);

@@ -289,7 +289,7 @@ function initCourierMapIfNeeded(){
   if (courierMap) return;
   courierMap = L.map('courierMap', { zoomControl: true });
   L.maplibreGL({
-    style: 'https://tiles.openfreemap.org/styles/positron',
+    style: 'https://tiles.openfreemap.org/styles/liberty',
     attribution: '© OpenStreetMap contributors © OpenFreeMap'
   }).addTo(courierMap);
   markersLayer = L.layerGroup().addTo(courierMap);
