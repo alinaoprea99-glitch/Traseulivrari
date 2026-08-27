@@ -288,9 +288,9 @@ const STATUS_COLORS = { pending: '#5B6B6D', delivered: '#16A34A', failed: '#C23B
 function initCourierMapIfNeeded(){
   if (courierMap) return;
   courierMap = L.map('courierMap', { zoomControl: true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap contributors'
+  L.maplibreGL({
+    style: 'https://tiles.openfreemap.org/styles/positron',
+    attribution: '© OpenStreetMap contributors © OpenFreeMap'
   }).addTo(courierMap);
   markersLayer = L.layerGroup().addTo(courierMap);
   routeLineLayer = L.layerGroup().addTo(courierMap);

@@ -84,9 +84,9 @@ let routeLineLayer = null;
 function initMapIfNeeded(){
   if (trackMap) return;
   trackMap = L.map('trackMap', { zoomControl: true, attributionControl: false });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap contributors'
+  L.maplibreGL({
+    style: 'https://tiles.openfreemap.org/styles/positron',
+    attribution: '© OpenStreetMap contributors © OpenFreeMap'
   }).addTo(trackMap);
   routeLineLayer = L.layerGroup().addTo(trackMap);
 }
