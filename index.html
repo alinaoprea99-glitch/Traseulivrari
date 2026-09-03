@@ -24,6 +24,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
 <script src="firebase-config.js"></script>
 
 <style>
@@ -1102,6 +1103,7 @@ button.addr-lock-badge:hover svg{color:var(--danger);}
         <button class="btn btn-ghost btn-sm" id="logoutBtn" style="flex:1;" title="Deconectare">Deconectare</button>
         <button class="btn btn-ghost btn-sm" id="resetBtn" style="flex:1; color:var(--danger); border-color:var(--line);" title="Șterge curieri, adrese și trasee — pornește o zi nouă de la zero">Resetează tot</button>
       </div>
+      <button class="btn btn-ghost btn-sm btn-block" id="enableNotifBtn" style="display:none; margin-top:6px;">🔔 Activează notificările</button>
     </div>
 
     <div class="tabs">

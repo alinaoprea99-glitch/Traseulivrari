@@ -93,11 +93,15 @@ function initAuthGate(){
       // nudge now that the real layout is visible, or it stays blank/misrendered.
       setTimeout(() => map && map.invalidateSize(), 0);
       initFirestoreSync();
+      registerDispatcherPushToken();
+      updateNotifButtonVisibility();
     } else {
       appRoot.style.display = 'none';
       loginScreen.style.display = 'flex';
     }
   });
+
+  document.getElementById('enableNotifBtn').addEventListener('click', enableDispatcherPushNotifications);
 
   loginForm.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -120,6 +124,49 @@ function initAuthGate(){
   document.getElementById('logoutBtn').addEventListener('click', () => {
     firebase.auth().signOut();
   });
+}
+
+// Notificări push (dispecer) — token FCM scris pe dispatcherData/push.fcmToken (un al 4-lea
+// document în colecția existentă, alături de couriers/addresses/routes — vezi firestore.rules,
+// deja permisiv pe orice docId din dispatcherData pentru contul de dispecer). Citit de
+// functions/index.js la fiecare confirmare/observație a unui client, ca la curier — vezi
+// curier.js pentru mecanismul identic (aceeași cheie VAPID, același proiect Firebase).
+const FCM_VAPID_KEY = 'BB8C-RoerjzfrRbSkJSwntyPRJvPPdg-hX38ogD4Vuc3CCy3inHv_22jSzGU_GhttE1bJG1fWP3p59cnNUPSvDg';
+let dispatcherPushTokenSynced = false;
+
+function updateNotifButtonVisibility(){
+  const btn = document.getElementById('enableNotifBtn');
+  if (!btn) return;
+  btn.style.display = (typeof Notification !== 'undefined' && Notification.permission === 'default' && 'serviceWorker' in navigator) ? '' : 'none';
+}
+
+/** Reîmprospătează tokenul dacă permisiunea e deja acordată dintr-o sesiune anterioară — apelat la fiecare login. `force` ignoră guard-ul (folosit imediat după ce butonul tocmai a obținut permisiunea). */
+async function registerDispatcherPushToken({ force = false } = {}){
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (!force && dispatcherPushTokenSynced) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const messaging = firebase.messaging();
+    const token = await messaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: registration });
+    if (token){
+      await db.collection('dispatcherData').doc('push').set({ fcmToken: token }, { merge: true });
+      dispatcherPushTokenSynced = true;
+    }
+  } catch (e){
+    console.error('Nu am putut înregistra tokenul de notificări', e);
+  }
+}
+
+/** Buton "Activează notificările" — gest explicit necesar ca promptul să funcționeze fiabil. */
+async function enableDispatcherPushNotifications(){
+  if (typeof Notification === 'undefined' || !('serviceWorker' in navigator)) return;
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') await registerDispatcherPushToken({ force: true });
+  } catch (e){
+    console.error('Nu am putut activa notificările', e);
+  }
+  updateNotifButtonVisibility();
 }
 
 /**

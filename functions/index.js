@@ -13,6 +13,21 @@ const { getMessaging } = require('firebase-admin/messaging');
 initializeApp();
 const db = getFirestore();
 
+/** Trimite un push la un token dat; șterge tokenul (via onInvalidToken) dacă a expirat/dezinstalat — orice altă eroare doar se loghează, fără să blocheze restul sincronizării. */
+async function sendPush(token, { title, body, link }, onInvalidToken){
+  if (!token) return;
+  try {
+    await getMessaging().send({
+      token,
+      notification: { title, body },
+      webpush: { fcmOptions: { link } }
+    });
+  } catch (e){
+    if (e.code === 'messaging/registration-token-not-registered') await onInvalidToken();
+    else console.error('Nu am putut trimite notificarea push', e);
+  }
+}
+
 /**
  * courierRuns -> stops: la fiecare schimbare de poziție/status a curierului, propagă spre
  * fiecare document public stops/{stopId} DOAR ce are voie să vadă clientul respectiv —
@@ -54,9 +69,9 @@ exports.syncCourierRunToStops = onDocumentUpdated('courierRuns/{runId}', async (
  * funcția de mai sus (care scrie pe stops de fiecare dată când courierRuns se schimbă, dar
  * niciodată pe clientConfirmed/clientNote).
  *
- * Faza 5: după sincronizare, trimite și o notificare push curierului (dacă are fcmToken —
- * vezi curier.js/firestore.rules) — DOAR când clientul confirmă sau scrie ceva nou, nu și
- * când retrage o confirmare/observație, ca să nu-l deranjeze fără motiv.
+ * Faza 5: după sincronizare, trimite și o notificare push curierului ȘI dispecerului (dacă au
+ * fcmToken — vezi curier.js/app.js/firestore.rules) — DOAR când clientul confirmă sau scrie
+ * ceva nou, nu și când retrage o confirmare/observație, ca să nu-i deranjeze fără motiv.
  */
 exports.syncClientResponseToCourierRun = onDocumentUpdated('stops/{stopId}', async (event) => {
   const before = event.data.before.data();
@@ -78,24 +93,16 @@ exports.syncClientResponseToCourierRun = onDocumentUpdated('stops/{stopId}', asy
     parts.push(`💬 Observație: „${after.clientNote}”`);
   }
   if (!parts.length) return;
+  const notification = { title: 'Crăița — actualizare client', body: parts.join(' · ') };
 
   const runSnap = await runRef.get();
-  const fcmToken = runSnap.exists ? runSnap.data().fcmToken : null;
-  if (!fcmToken) return;
+  const courierToken = runSnap.exists ? runSnap.data().fcmToken : null;
+  await sendPush(courierToken, { ...notification, link: 'curier.html' },
+    () => runRef.update({ fcmToken: FieldValue.delete() }));
 
-  try {
-    await getMessaging().send({
-      token: fcmToken,
-      notification: { title: 'Crăița — actualizare client', body: parts.join(' · ') },
-      webpush: { fcmOptions: { link: 'curier.html' } }
-    });
-  } catch (e){
-    // Tokenul a expirat/dezinstalat — îl șterg ca să nu mai încerce degeaba la fiecare
-    // răspuns al clientului; orice altă eroare doar se loghează, fără să blocheze sincronizarea.
-    if (e.code === 'messaging/registration-token-not-registered'){
-      await runRef.update({ fcmToken: FieldValue.delete() });
-    } else {
-      console.error('Nu am putut trimite notificarea push către curier', e);
-    }
-  }
+  const dispatcherRef = db.doc('dispatcherData/push');
+  const dispatcherSnap = await dispatcherRef.get();
+  const dispatcherToken = dispatcherSnap.exists ? dispatcherSnap.data().fcmToken : null;
+  await sendPush(dispatcherToken, { ...notification, link: 'index.html' },
+    () => dispatcherRef.update({ fcmToken: FieldValue.delete() }));
 });

@@ -13,8 +13,10 @@ rules_version = '2';
 // Faza 3: lastPos (poziția GPS live a curierului) adăugat la câmpurile permise la update.
 //
 // Faza 5: fcmToken (token-ul push al telefonului curierului, scris de curier.js) adăugat la
-// câmpurile permise la update — citit doar de Cloud Functions (drepturi admin) ca să trimită
-// notificarea când clientul confirmă/scrie o observație.
+// câmpurile permise la update pe courierRuns — citit doar de Cloud Functions (drepturi admin)
+// ca să trimită notificarea când clientul confirmă/scrie o observație. Tokenul push al
+// dispecerului (scris de app.js) e un al 4-lea document, dispatcherData/push — deja acoperit
+// de regula dispatcherData de mai jos, fără nicio schimbare aici.
 //
 // Faza 4: stops — un document per oprire, generat de dispecer odată cu courierRuns
 // (vezi app.js createCourierRun), conținând STRICT ce are voie să vadă acel client — nu
