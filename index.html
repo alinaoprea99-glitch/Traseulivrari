@@ -934,9 +934,11 @@ button.addr-lock-badge:hover svg{color:var(--danger);}
 .map-legend{
   position:absolute;
   bottom:18px; left:18px;
-  background:color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter:blur(12px) saturate(1.3);
-  -webkit-backdrop-filter:blur(12px) saturate(1.3);
+  /* Fără backdrop-filter (blur) — direct deasupra hărții WebGL live, browserul ar trebui să
+     recalculeze blur-ul la fiecare cadru cât timp harta se redesenează (zoom/pan), ceea ce
+     poate bloca vizibil tot thread-ul principal. Opacitate mai mare în loc de blur, ca textul
+     să rămână lizibil peste hartă fără acest cost. */
+  background:color-mix(in srgb, var(--surface) 97%, transparent);
   border:1px solid var(--line);
   border-radius:var(--radius);
   padding:11px 13px;
@@ -961,9 +963,8 @@ button.addr-lock-badge:hover svg{color:var(--danger);}
   pointer-events:none;
 }
 .map-title-chip{
-  background:color-mix(in srgb, var(--surface) 92%, transparent);
-  backdrop-filter:blur(12px) saturate(1.3);
-  -webkit-backdrop-filter:blur(12px) saturate(1.3);
+  /* Vezi comentariul din .map-legend — fără backdrop-filter peste harta WebGL live. */
+  background:color-mix(in srgb, var(--surface) 97%, transparent);
   border:1px solid var(--line);
   border-radius:var(--radius);
   padding:10px 14px;
