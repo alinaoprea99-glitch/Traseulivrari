@@ -12,6 +12,10 @@ rules_version = '2';
 //
 // Faza 3: lastPos (poziția GPS live a curierului) adăugat la câmpurile permise la update.
 //
+// Faza 5: fcmToken (token-ul push al telefonului curierului, scris de curier.js) adăugat la
+// câmpurile permise la update — citit doar de Cloud Functions (drepturi admin) ca să trimită
+// notificarea când clientul confirmă/scrie o observație.
+//
 // Faza 4: stops — un document per oprire, generat de dispecer odată cu courierRuns
 // (vezi app.js createCourierRun), conținând STRICT ce are voie să vadă acel client — nu
 // traseul complet, nu alți clienți. Același model "get pe ID exact, list interzis" ca la
@@ -34,7 +38,7 @@ service cloud.firestore {
       allow list: if false;
       allow create: if isDispatcher();
       allow update: if request.auth != null
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stops', 'lastPos']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['stops', 'lastPos', 'fcmToken']);
       allow delete: if false;
     }
 

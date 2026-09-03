@@ -7,7 +7,8 @@
 // drepturi admin (ocolesc regulile de securitate, care există doar pentru clienți browser).
 const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { initializeApp } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getMessaging } = require('firebase-admin/messaging');
 
 initializeApp();
 const db = getFirestore();
@@ -52,6 +53,10 @@ exports.syncCourierRunToStops = onDocumentUpdated('courierRuns/{runId}', async (
  * amestece cele două surse. Verifică explicit ce s-a schimbat, ca să nu intre în buclă cu
  * funcția de mai sus (care scrie pe stops de fiecare dată când courierRuns se schimbă, dar
  * niciodată pe clientConfirmed/clientNote).
+ *
+ * Faza 5: după sincronizare, trimite și o notificare push curierului (dacă are fcmToken —
+ * vezi curier.js/firestore.rules) — DOAR când clientul confirmă sau scrie ceva nou, nu și
+ * când retrage o confirmare/observație, ca să nu-l deranjeze fără motiv.
  */
 exports.syncClientResponseToCourierRun = onDocumentUpdated('stops/{stopId}', async (event) => {
   const before = event.data.before.data();
@@ -59,8 +64,38 @@ exports.syncClientResponseToCourierRun = onDocumentUpdated('stops/{stopId}', asy
   if (!after || !after.runId || !after.addressId) return;
   if (before.clientConfirmed === after.clientConfirmed && before.clientNote === after.clientNote) return;
 
-  await db.doc(`courierRuns/${after.runId}`).update({
+  const runRef = db.doc(`courierRuns/${after.runId}`);
+  await runRef.update({
     [`stops.${after.addressId}.clientConfirmed`]: after.clientConfirmed ?? null,
     [`stops.${after.addressId}.clientNote`]: after.clientNote || ''
   });
+
+  const parts = [];
+  if (after.clientConfirmed === true && before.clientConfirmed !== true){
+    parts.push(`✓ ${after.clientName || 'Clientul'} a confirmat: va fi acasă`);
+  }
+  if (after.clientNote && after.clientNote !== before.clientNote){
+    parts.push(`💬 Observație: „${after.clientNote}”`);
+  }
+  if (!parts.length) return;
+
+  const runSnap = await runRef.get();
+  const fcmToken = runSnap.exists ? runSnap.data().fcmToken : null;
+  if (!fcmToken) return;
+
+  try {
+    await getMessaging().send({
+      token: fcmToken,
+      notification: { title: 'Crăița — actualizare client', body: parts.join(' · ') },
+      webpush: { fcmOptions: { link: 'curier.html' } }
+    });
+  } catch (e){
+    // Tokenul a expirat/dezinstalat — îl șterg ca să nu mai încerce degeaba la fiecare
+    // răspuns al clientului; orice altă eroare doar se loghează, fără să blocheze sincronizarea.
+    if (e.code === 'messaging/registration-token-not-registered'){
+      await runRef.update({ fcmToken: FieldValue.delete() });
+    } else {
+      console.error('Nu am putut trimite notificarea push către curier', e);
+    }
+  }
 });

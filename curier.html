@@ -32,6 +32,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
 <script src="firebase-config.js"></script>
 
 <style>
@@ -156,6 +157,18 @@ body{
 }
 .send-checkins-btn:active{ transform:scale(0.98); }
 .send-checkins-btn svg{ width:16px; height:16px; }
+
+.notif-banner{
+  margin-top:12px; width:100%;
+  border:none; cursor:pointer;
+  padding:11px 14px;
+  border-radius:var(--radius-md);
+  background:var(--route-soft); color:var(--route);
+  font-weight:700; font-size:12.5px; line-height:1.35; text-align:left;
+  font-family:inherit;
+  transition:transform .12s ease;
+}
+.notif-banner:active{ transform:scale(0.98); }
 
 /* ---- content ---- */
 .content{ padding:16px 16px 0; }

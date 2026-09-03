@@ -11,6 +11,46 @@
 const db = firebase.firestore();
 let currentRunId = null;
 
+// Notificări push — token FCM scris pe courierRuns/{currentRunId}.fcmToken (vezi firestore.rules),
+// citit de functions/index.js la fiecare răspuns al clientului. Cheia VAPID e publică (nu e un
+// secret — accesul e controlat de firestore.rules, la fel ca firebaseConfig).
+const FCM_VAPID_KEY = 'BB8C-RoerjzfrRbSkJSwntyPRJvPPdg-hX38ogD4Vuc3CCy3inHv_22jSzGU_GhttE1bJG1fWP3p59cnNUPSvDg';
+let pushTokenSyncedForRun = null;
+
+/**
+ * Scrie/reîmprospătează tokenul doar dacă permisiunea e deja acordată — apelat automat la
+ * fiecare traseu nou (vezi applyRunSnapshot), ca noul courierRuns/{runId} al zilei să aibă
+ * mereu tokenul, nu doar cel de ieri. `force` ignoră guard-ul pushTokenSyncedForRun (folosit
+ * de butonul de activare, imediat după ce permisiunea tocmai a fost acordată).
+ */
+async function registerPushToken({ force = false } = {}){
+  if (!currentRunId || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  if (!force && pushTokenSyncedForRun === currentRunId) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const messaging = firebase.messaging();
+    const token = await messaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: registration });
+    if (token){
+      await db.collection('courierRuns').doc(currentRunId).update({ fcmToken: token });
+      pushTokenSyncedForRun = currentRunId;
+    }
+  } catch (e){
+    console.error('Nu am putut înregistra tokenul de notificări', e);
+  }
+}
+
+/** Buton "Activează notificările" — cere explicit un gest al utilizatorului, necesar ca promptul să funcționeze fiabil pe iOS Safari. */
+async function enablePushNotifications(){
+  if (typeof Notification === 'undefined' || !('serviceWorker' in navigator)) return;
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') await registerPushToken({ force: true });
+    render(); // ascunde bannerul dacă permisiunea a fost acordată (sau confirmată refuzată)
+  } catch (e){
+    console.error('Nu am putut activa notificările', e);
+  }
+}
+
 function addMinutesToTime(hhmm, minutesToAdd){
   const [h, m] = hhmm.split(':').map(Number);
   let total = (h * 60 + m + minutesToAdd) % (24 * 60);
@@ -70,6 +110,9 @@ function applyRunSnapshot(runId, data){
   // only once the courier happens to open the map tab — a no-op after the first call
   // (startLocationWatch guards on watchId already being set).
   startLocationWatch();
+  // Reîmprospătează tokenul push pe noul courierRuns/{runId} dacă permisiunea era deja acordată
+  // dintr-o sesiune anterioară — no-op (return imediat) dacă nu s-a acordat încă.
+  registerPushToken();
 }
 
 /** Targeted dot-path update — touches only this one stop's fields, never rewrites the whole run document. */
@@ -597,6 +640,8 @@ function render(){
         <button class="${currentView === 'list' ? 'active' : ''}" data-view="list">${ICONS.list} Listă</button>
         <button class="${currentView === 'map' ? 'active' : ''}" data-view="map">${ICONS.map} Hartă</button>
       </div>
+      ${typeof Notification !== 'undefined' && Notification.permission === 'default' && 'serviceWorker' in navigator ? `
+      <button class="notif-banner" id="enableNotifBtn">🔔 Activează notificările — află imediat când clientul confirmă sau scrie ceva</button>` : ''}
     </div>
     <div class="content">
       <div id="stopsRoot"></div>
@@ -607,6 +652,9 @@ function render(){
   root.querySelectorAll('[data-view]').forEach(btn => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
+
+  const notifBtn = document.getElementById('enableNotifBtn');
+  if (notifBtn) notifBtn.addEventListener('click', enablePushNotifications);
 
   const stopsRoot = document.getElementById('stopsRoot');
   let html = '';

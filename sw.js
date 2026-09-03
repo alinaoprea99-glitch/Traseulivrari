@@ -13,6 +13,21 @@ const APP_SHELL = [
   './manifest.webmanifest'
 ];
 
+// Notificări push (curier) — reutilizează acest service worker, deja înregistrat de curier.html
+// și index.html, în loc de un al doilea SW (firebase-messaging-sw.js) care ar intra în conflict
+// de scope cu cel de mai sus. firebase.messaging() fără onBackgroundMessage explicit afișează
+// automat notificarea de sistem din payload-ul push când tab-ul e în fundal/închis. Într-un
+// try/catch: dacă scripturile nu se pot încărca (ex. instalare offline), restul SW-ului
+// (cache-ul app shell-ului) trebuie să funcționeze oricum.
+try {
+  importScripts(
+    'https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js',
+    'https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js',
+    './firebase-config.js'
+  );
+  firebase.messaging();
+} catch (e){}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).catch(() => {})

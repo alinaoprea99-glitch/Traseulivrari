@@ -1062,7 +1062,9 @@ button.addr-lock-badge:hover svg{color:var(--danger);}
 
 @media (max-width: 880px){
   .app{grid-template-columns:1fr;}
-  .sidebar{display:none;}
+  .sidebar{height:100vh;}
+  .map-wrap{height:0; overflow:visible;}
+  #map, .map-top-bar, #mapLegend{display:none;}
 }
 </style>
 </head>
