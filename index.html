@@ -351,6 +351,8 @@ input[type=file]{display:none;}
   transition:box-shadow .2s ease, transform .2s ease;
 }
 .courier-card:hover{ box-shadow:var(--shadow-2); }
+.courier-card.inactive{ opacity:.55; }
+.courier-card.inactive:hover{ opacity:.85; }
 .courier-head{
   display:flex;
   align-items:center;
@@ -364,6 +366,15 @@ input[type=file]{display:none;}
   flex-shrink:0;
   border:2px solid var(--white);
   box-shadow:0 0 0 1px var(--line);
+  position:relative;
+  overflow:hidden;
+  cursor:pointer;
+  display:block;
+}
+.courier-dot input[type="color"]{
+  position:absolute; inset:-4px;
+  width:calc(100% + 8px); height:calc(100% + 8px);
+  opacity:0; cursor:pointer; border:none; padding:0;
 }
 .courier-head .courier-name{
   font-weight:600;

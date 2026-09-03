@@ -268,6 +268,16 @@ function initMap(){
   }).addTo(map);
   markersLayer = L.layerGroup().addTo(map);
   routeLinesLayer = L.layerGroup().addTo(map);
+
+  // Leaflet nu observă singur schimbările de dimensiune ale containerului (de exemplu la
+  // trecerea peste breakpoint-ul mobil din CSS, sau redimensionarea ferestrei) — fără
+  // invalidateSize() explicit după fiecare resize, harta rămâne "înghețată" pe dimensiunea
+  // veche și tilurile/traseele apar tăiate sau deplasate până la un re-fit manual.
+  let mapResizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(mapResizeTimer);
+    mapResizeTimer = setTimeout(() => map.invalidateSize(), 200);
+  });
 }
 
 function updateMapTopBar(){
@@ -381,6 +391,7 @@ function addCourier(){
     departureTime: '10:00', // HH:MM, used to compute delivery time windows
     endTimeLimit: '',       // optional HH:MM, only used for a visual warning if a stop falls after it
     confirmed: false,       // true once the courier's fields have been validated via the confirm button
+    active: true,           // false = not working today — excluded from "Repartizează automat", but never deleted (keeps its persistentId/link, see setCourierActive)
     color
   });
   saveCouriersToStorage();
@@ -391,6 +402,28 @@ function removeCourier(id){
   state.couriers = state.couriers.filter(c => c.id !== id);
   state.addresses.forEach(a => { if (a.courierId === id) a.courierId = null; });
   delete state.routes[id];
+  saveCouriersToStorage();
+  renderCouriers();
+  renderAddresses();
+  renderRouteSummary();
+  redrawMap();
+}
+
+/**
+ * Toggle for a courier who isn't working today, WITHOUT deleting them (unlike removeCourier) —
+ * keeps their id/color/persistentId intact, so their permanent install-once link
+ * (curier.html?courier={persistentId}) keeps working across days regardless of active status.
+ * Deactivating frees up their addresses/route exactly like removeCourier used to, so
+ * "Repartizează automat" redistributes everything to the couriers still active today.
+ */
+function setCourierActive(id, active){
+  const courier = state.couriers.find(c => c.id === id);
+  if (!courier) return;
+  courier.active = active;
+  if (!active){
+    state.addresses.forEach(a => { if (a.courierId === id) a.courierId = null; });
+    delete state.routes[id];
+  }
   saveCouriersToStorage();
   renderCouriers();
   renderAddresses();
@@ -478,12 +511,13 @@ async function confirmCourier(courierId){
 
 function renderCouriers(){
   const list = document.getElementById('courierList');
-  document.getElementById('courierCount').textContent = state.couriers.length;
+  document.getElementById('courierCount').textContent = state.couriers.filter(c => c.active !== false).length;
   list.innerHTML = '';
 
   state.couriers.forEach(c => {
+    const isActive = c.active !== false;
     const card = document.createElement('div');
-    card.className = 'courier-card';
+    card.className = 'courier-card' + (isActive ? '' : ' inactive');
 
     const assignedCount = state.addresses.filter(a => a.courierId === c.id).length;
     const route = state.routes[c.id];
@@ -492,11 +526,16 @@ function renderCouriers(){
 
     card.innerHTML = `
       <div class="courier-head">
-        <span class="courier-dot" style="background:${c.color}"></span>
+        <label class="courier-dot" style="background:${c.color};" title="Schimbă culoarea curierului">
+          <input type="color" data-color="${c.id}" value="${c.color}">
+        </label>
         <input type="text" class="courier-name-input" value="${escapeHtml(c.name)}"
           style="border:none;background:none;font-weight:600;font-size:13.5px;flex:1;font-family:inherit;color:inherit;padding:2px 0;">
         ${c.confirmed ? '<span class="courier-confirmed-badge" title="Curier confirmat">✓ confirmat</span>' : ''}
-        <button class="btn-icon" title="Șterge curier" data-remove="${c.id}">×</button>
+        <label style="text-transform:none; font-weight:400; font-size:11px; display:flex; align-items:center; gap:4px; color:var(--ink-soft); cursor:pointer;" title="Curier activ azi — bifat, participă la &quot;Repartizează automat&quot;. Rămâne instalat pe telefonul lui indiferent de bifă.">
+          <input type="checkbox" data-active="${c.id}" ${isActive ? 'checked' : ''} style="margin:0;"> activ azi
+        </label>
+        <button class="btn-icon" title="Șterge curierul definitiv (îi pierzi linkul permanent — pentru \"nu lucrează azi\" folosește bifa de mai sus)" data-remove="${c.id}">×</button>
       </div>
       <div class="courier-body">
         <div class="courier-point-block">
@@ -557,6 +596,20 @@ function renderCouriers(){
   // wire events
   list.querySelectorAll('[data-remove]').forEach(btn => {
     btn.addEventListener('click', () => removeCourier(parseInt(btn.dataset.remove)));
+  });
+  list.querySelectorAll('[data-active]').forEach(cb => {
+    cb.addEventListener('change', () => setCourierActive(parseInt(cb.dataset.active), cb.checked));
+  });
+  list.querySelectorAll('[data-color]').forEach(input => {
+    input.addEventListener('change', () => {
+      const courier = state.couriers.find(c => c.id === parseInt(input.dataset.color));
+      if (!courier) return;
+      courier.color = input.value;
+      saveCouriersToStorage();
+      renderCouriers();
+      renderRouteSummary();
+      redrawMap();
+    });
   });
   list.querySelectorAll('[data-confirm]').forEach(btn => {
     btn.addEventListener('click', () => confirmCourier(parseInt(btn.dataset.confirm)));
@@ -2051,8 +2104,9 @@ async function runAutoAssignAndRoute(){
   // even if the user never blurred the field (e.g. typed the address then clicked "Repartizează automat")
   await ensureAllCourierPointsGeocoded();
 
-  const validCouriers = state.couriers.filter(c => c.start.status === 'ok');
-  const invalidCouriers = state.couriers.filter(c => c.start.status !== 'ok');
+  const todayCouriers = state.couriers.filter(c => c.active !== false); // curierii marcați "nu lucrează azi" sunt excluși tăcut, fără avertisment de punct de plecare lipsă
+  const validCouriers = todayCouriers.filter(c => c.start.status === 'ok');
+  const invalidCouriers = todayCouriers.filter(c => c.start.status !== 'ok');
 
   if (!validCouriers.length){
     showToast('Niciun curier nu are un punct de plecare valid. Completează adresa și încearcă din nou.', true);
