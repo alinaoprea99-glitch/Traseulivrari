@@ -4762,9 +4762,9 @@ async function showGenerateMessagesModal(){
   overlay.innerHTML = `
     <div class="modal-box" style="max-width:540px;">
       <div class="modal-title">Mesaje pentru clienți</div>
-      <div class="hint" style="margin-bottom:10px;">Verifică prenumele detectat pentru fiecare client — clienții nu completează mereu corect câmpurile de nume la comandă. Corectează direct în casetă dacă e greșit, apoi descarcă fișierul pentru trimitere automată prin Messages.</div>
-      <div class="field" style="margin-bottom:10px; max-width:160px;">
-        <label>Ziua livrării</label>
+      <div class="hint" style="margin-bottom:10px;">Verifică prenumele detectat pentru fiecare client — clienții nu completează mereu corect câmpurile de nume la comandă. Corectează direct în casetă dacă e greșit, apoi descarcă fișierul pentru trimitere automată prin Messages. Ziua livrării de sus se aplică tuturor — editeaz-o direct la un client dacă livrarea lui e în altă zi.</div>
+      <div class="field" style="margin-bottom:10px; max-width:200px;">
+        <label>Ziua livrării (implicit, pentru toți)</label>
         <input type="text" id="gmDayPhrase" value="maine">
       </div>
       <div id="gmRows" style="max-height:42vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
@@ -4802,6 +4802,13 @@ async function showGenerateMessagesModal(){
   const dayInput = overlay.querySelector('#gmDayPhrase');
   overlay.querySelector('#gmDownloadBtn').disabled = false;
 
+  // Ziua livrării e implicit aceeași pentru toți (câmpul de sus), dar unele comenzi dintr-un
+  // lot pot avea o zi de livrare diferită — de aceea fiecare rând are propriul câmp editabil,
+  // pre-completat cu valoarea globală. dayOverrides ține minte care rânduri au fost editate
+  // individual, ca schimbarea câmpului global să nu le suprascrie pe alea (dar să sincronizeze
+  // în continuare rândurile neatinse).
+  const dayOverrides = new Set();
+
   function renderRow(stop){
     const { addr, win, route } = stop;
     const windowText = formatWindowForMessage(win);
@@ -4814,32 +4821,49 @@ async function showGenerateMessagesModal(){
         <input type="text" class="gm-name-input" data-id="${addr.id}" value="${escapeHtml(getGreetingFirstName(addr))}" placeholder="prenume">
         <span class="gm-phone">${escapeHtml(addr.phone)}</span>
       </div>
-      <div class="gm-window">${ICONS.clock}${escapeHtml(windowText)}</div>
+      <div class="gm-row-top">
+        <div class="gm-window">${ICONS.clock}${escapeHtml(windowText)}</div>
+        <input type="text" class="gm-name-input gm-day-input" data-day="${addr.id}" value="${escapeHtml(dayInput.value.trim())}" style="max-width:110px; flex:none;" title="Ziua livrării pentru acest client — implicit cea de sus, editabilă individual">
+      </div>
       <div class="gm-preview" id="gmPreview-${addr.id}"></div>
     `;
     const preview = row.querySelector('.gm-preview');
+    const dayRowInput = row.querySelector('.gm-day-input');
     const updatePreview = () => {
-      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayInput.value.trim(), windowText, clientLink);
+      preview.textContent = buildDeliveryMessage(getGreetingFirstName(addr), dayRowInput.value.trim(), windowText, clientLink);
     };
-    row.querySelector('.gm-name-input').addEventListener('input', (e) => {
+    row.querySelector('.gm-name-input:not(.gm-day-input)').addEventListener('input', (e) => {
       addr.greetingNameOverride = e.target.value.trim();
+      updatePreview();
+    });
+    dayRowInput.addEventListener('input', () => {
+      dayOverrides.add(addr.id);
       updatePreview();
     });
     updatePreview();
     rowsEl.appendChild(row);
-    return updatePreview;
+    return {
+      updatePreview,
+      syncDay: (val) => {
+        if (dayOverrides.has(addr.id)) return; // rând editat individual — nu-l suprascrie
+        dayRowInput.value = val;
+        updatePreview();
+      }
+    };
   }
 
-  const updaters = stops.map(renderRow);
-  dayInput.addEventListener('input', () => updaters.forEach(fn => fn()));
+  const rows = stops.map(renderRow);
+  dayInput.addEventListener('input', () => {
+    const val = dayInput.value.trim();
+    rows.forEach(r => r.syncDay(val));
+  });
 
   overlay.querySelector('#gmDownloadBtn').addEventListener('click', () => {
     saveAddressesToStorage(); // persist any greeting-name corrections made in this review pass
-    const dayPhrase = dayInput.value.trim();
     const payload = stops.map(({ addr, win, route }) => ({
       phone: normalizePhoneForMessages(addr.phone),
       message: buildDeliveryMessage(
-        getGreetingFirstName(addr), dayPhrase, formatWindowForMessage(win),
+        getGreetingFirstName(addr), overlay.querySelector(`[data-day="${addr.id}"]`).value.trim(), formatWindowForMessage(win),
         route.clientIds && route.clientIds[addr.id] ? buildClientLink(route.clientIds[addr.id]) : ''
       )
     }));
