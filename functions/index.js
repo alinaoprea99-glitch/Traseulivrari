@@ -34,33 +34,139 @@ async function sendPush(token, { title, body, link }, onInvalidToken){
  * niciodată traseul complet sau alți clienți. stopsAhead se recalculează de fiecare dată
  * (nu se stochează separat pe courierRuns) — numărul de opriri încă "pending" cu order mai
  * mic decât al acestei opriri.
+ *
+ * Faza 6: timpul de sosire afișat clientului era calculat GREȘIT (tracking.js calcula, client-
+ * side, ruta directă curier -> el, ignorând opririle dintre ei — deci arăta timpul "dacă ar
+ * veni acum direct la tine", nu timpul real). Calculul corect are nevoie de tot traseul rămas,
+ * la care un client nu are voie acces (vezi firestore.rules) — de-aia se face aici, o singură
+ * dată per update de poziție, pentru toate opririle pending deodată (computeCourierEtas mai
+ * jos), și se trimite mai departe fiecărui client DOAR rezultatul lui: timp/distanță cumulate
+ * și coordonatele (fără nume/adresă/alte detalii) opririlor dinaintea lui.
+ *
+ * Faza 6.1: OSRM (serviciul de rutare, gratuit) nu are date de trafic live — estimează doar
+ * "drum liber", ceea ce poate diferi cu 10+ minute într-o zi aglomerată. Calibrăm la fiecare
+ * update: comparăm timpul REAL scurs între ultimele două poziții GPS ale curierului cu timpul
+ * pe care OSRM l-ar estima pentru exact acea distanță — dacă a durat mai mult (trafic), scalăm
+ * ETA-ul rămas proporțional. Fără nicio stare persistentă între update-uri (nu scriem factorul
+ * înapoi pe courierRuns — ar re-declanșa funcția asta la infinit); se recalibrează din ultimul
+ * interval de ~15s de fiecare dată, amortizat ca o singură oprire la semafor să nu răstoarne
+ * estimarea (vezi computeCourierEtas).
  */
 exports.syncCourierRunToStops = onDocumentUpdated('courierRuns/{runId}', async (event) => {
+  const before = event.data.before.data();
   const after = event.data.after.data();
   if (!after || !after.stops) return;
 
   const entries = Object.entries(after.stops);
-  const pendingOrders = entries
+  const pendingEntries = entries
     .filter(([, s]) => (s.status || 'pending') === 'pending')
-    .map(([, s]) => s.order);
+    .sort((a, b) => a[1].order - b[1].order);
+  const pendingOrders = pendingEntries.map(([, s]) => s.order);
+
+  let etas = {};
+  if (after.lastPos && pendingEntries.length){
+    try {
+      const prevPos = before && before.lastPos;
+      // doar dacă poziția chiar s-a schimbat față de update-ul trecut (nu un re-trigger din
+      // status/clientNote) — altfel n-avem un interval real de calibrat
+      const calibratePos = (prevPos && prevPos.updatedAt !== after.lastPos.updatedAt) ? prevPos : null;
+      const actualElapsedSec = calibratePos ? (new Date(after.lastPos.updatedAt) - new Date(calibratePos.updatedAt)) / 1000 : 0;
+      etas = await computeCourierEtas(after.lastPos, pendingEntries, calibratePos, actualElapsedSec);
+    } catch (e){
+      console.error('Nu am putut calcula timpii estimați de sosire', e);
+    }
+  }
 
   const batch = db.batch();
-  entries.forEach(([, s]) => {
+  entries.forEach(([addrKey, s]) => {
     if (!s.stopId) return; // run-uri create înainte de Faza 4 nu au stops/ asociat — ignorate
     const status = s.status || 'pending';
     const stopsAhead = status === 'pending'
       ? pendingOrders.filter((o) => o < s.order).length
       : 0;
+    const eta = etas[addrKey];
     batch.update(db.collection('stops').doc(s.stopId), {
       status,
       stopsAhead,
       courierLat: after.lastPos ? after.lastPos.lat : null,
       courierLng: after.lastPos ? after.lastPos.lng : null,
-      courierUpdatedAt: after.lastPos ? after.lastPos.updatedAt : null
+      courierUpdatedAt: after.lastPos ? after.lastPos.updatedAt : null,
+      courierEtaMinutes: eta ? eta.etaMinutes : null,
+      courierEtaKm: eta ? eta.etaKm : null,
+      courierRouteGeometry: eta ? eta.geometry : null,
+      courierIntermediateStops: eta ? eta.intermediateStops : null
     });
   });
   await batch.commit();
 });
+
+/**
+ * Un singur apel OSRM cu poziția curierului + toate opririle pending ca waypoint-uri, în ordine
+ * — mult mai eficient decât înainte (fiecare client, în tracking.js, își calcula singur, client-
+ * side, un apel OSRM separat, repetat la fiecare ~15s cât avea pagina deschisă: N clienți
+ * deschiși = N apeluri repetate; acum e UN apel per update de poziție al curierului, indiferent
+ * câți clienți urmăresc). steps=true ca să putem reconstitui geometria traseului PARȚIAL de la
+ * curier până la fiecare oprire i (concatenând geometria fiecărui pas din legs[0..i]) —
+ * overview=full ar da doar geometria traseului ÎNTREG, nu utilă per-oprire.
+ *
+ * calibratePos (opțional) — poziția ANTERIOARĂ a curierului: dacă e dată, o punem ca prim
+ * waypoint, ca leg-ul 0 (calibratePos -> courierPos) să ne dea timpul pe care OSRM l-ar estima
+ * pentru distanța pe care curierul TOCMAI a parcurs-o. Comparat cu actualElapsedSec (timpul
+ * REAL scurs între cele două poziții GPS), obținem un factor de trafic aplicat la tot restul
+ * estimărilor. Ignorat (factor neutru) dacă intervalul e prea scurt/lung ca să reflecte trafic
+ * real (curier oprit la o livrare, semnal GPS pierdut) — vezi pragurile de mai jos.
+ */
+async function computeCourierEtas(courierPos, pendingEntries, calibratePos, actualElapsedSec){
+  const waypoints = [
+    ...(calibratePos ? [calibratePos] : []),
+    courierPos,
+    ...pendingEntries.map(([, s]) => ({ lat: s.lat, lng: s.lng }))
+  ];
+  const coordStr = waypoints.map((p) => `${p.lng},${p.lat}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=false&geometries=geojson&steps=true`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.code !== 'Ok' || !json.routes || !json.routes.length) return {};
+
+  const legs = json.routes[0].legs;
+  let legOffset = 0;
+  let trafficFactor = 1;
+  if (calibratePos){
+    legOffset = 1;
+    const predictedSec = legs[0].duration;
+    // sub 15s estimate OSRM sau interval real în afara a 5-90s — prea nesigur ca semnal de
+    // trafic (curier oprit la livrare, poziții aproape identice, gap de semnal GPS) — păstrăm
+    // estimarea de drum liber neschimbată în loc să riscăm un factor aberant
+    if (predictedSec >= 15 && actualElapsedSec >= 5 && actualElapsedSec <= 90){
+      const instantRatio = Math.min(2, Math.max(0.5, actualElapsedSec / predictedSec));
+      trafficFactor = 1 + 0.5 * (instantRatio - 1); // amortizat — o singură oprire la semafor nu răstoarnă estimarea
+    }
+  }
+
+  const result = {};
+  let cumDuration = 0, cumDistance = 0;
+  const geometrySoFar = [];
+  const intermediateStops = [];
+  for (let i = legOffset; i < legs.length; i++){
+    const leg = legs[i];
+    cumDuration += leg.duration;
+    cumDistance += leg.distance;
+    (leg.steps || []).forEach((step) => {
+      const coords = (step.geometry && step.geometry.coordinates) || [];
+      coords.forEach(([lng, lat]) => geometrySoFar.push({ lat, lng }));
+    });
+    const pendingIdx = i - legOffset;
+    const [addrKey] = pendingEntries[pendingIdx];
+    result[addrKey] = {
+      etaMinutes: Math.round(cumDuration * trafficFactor / 60),
+      etaKm: Math.round(cumDistance / 100) / 10,
+      geometry: geometrySoFar.slice(),
+      intermediateStops: intermediateStops.slice()
+    };
+    intermediateStops.push({ lat: pendingEntries[pendingIdx][1].lat, lng: pendingEntries[pendingIdx][1].lng });
+  }
+  return result;
+}
 
 /**
  * stops -> courierRuns: răspunsul clientului (confirmare + observație) apare live la curier

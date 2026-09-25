@@ -3786,11 +3786,35 @@ async function ensureCourierRun(courier, route){
  * still shows what happened, same philosophy as cancelStop keeping the address itself as a
  * record rather than deleting it).
  */
+/** Links a resolved client lookup to a stop — shared by both the "new stop" and "existing stop missing its link" paths in resyncCourierRun below. */
+function linkClientToStop(batch, route, addrId, lookup, stopId){
+  const update = {
+    phone: lookup.phone,
+    stopIds: firebase.firestore.FieldValue.arrayUnion(stopId),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  };
+  if (lookup.isNew) update.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+  batch.set(db.collection('clients').doc(lookup.id), update, { merge: true });
+  if (!route.clientIds) route.clientIds = {};
+  route.clientIds[addrId] = lookup.id;
+}
+
 async function resyncCourierRun(courier, route, today){
   const runRef = db.collection('courierRuns').doc(route.courierRunId);
   const existingIds = Object.keys(route.stopIds);
   const currentIds = route.order.map(String);
   const newAddrIds = route.order.filter(addrId => !existingIds.includes(String(addrId)));
+  // O oprire deja existentă poate să nu aibă încă un clientId legat — ex: telefonul a fost
+  // adăugat/corectat DUPĂ ce oprirea era deja în traseul trimis curierului, moment în care
+  // lookup-ul de client rula doar pentru opririle noi (newAddrIds), niciodată pentru cele deja
+  // existente — găsit pe teren: linkul de urmărire lipsea din mesajul generat pentru un client
+  // a cărui adresă exista deja în traseu. Reîncercăm aici, la fiecare resincronizare, pentru
+  // orice oprire existentă care are telefon dar încă nu apare în route.clientIds.
+  const missingClientAddrIds = route.order.filter(addrId => {
+    if (newAddrIds.includes(addrId)) return false;
+    const a = state.addresses.find(x => x.id === addrId);
+    return a && a.phone && (!route.clientIds || !route.clientIds[addrId]);
+  });
 
   const stopRefs = {};
   route.order.forEach(addrId => {
@@ -3798,7 +3822,7 @@ async function resyncCourierRun(courier, route, today){
     stopRefs[addrId] = existingId ? { id: existingId } : db.collection('stops').doc();
   });
   const freshStops = buildCourierRunStops(route, stopRefs);
-  const clientLookups = await resolveClientLookups(newAddrIds);
+  const clientLookups = await resolveClientLookups([...newAddrIds, ...missingClientAddrIds]);
 
   const batch = db.batch();
   // Only ever touches the top-level "stops" key (via stops.* dot-paths below) — firestore.rules'
@@ -3845,17 +3869,7 @@ async function resyncCourierRun(courier, route, today){
       });
       route.stopIds[addrId] = stopRefs[addrId].id;
       const lookup = clientLookups[addrId];
-      if (lookup){
-        const update = {
-          phone: lookup.phone,
-          stopIds: firebase.firestore.FieldValue.arrayUnion(stopRefs[addrId].id),
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        };
-        if (lookup.isNew) update.createdAt = firebase.firestore.FieldValue.serverTimestamp();
-        batch.set(db.collection('clients').doc(lookup.id), update, { merge: true });
-        if (!route.clientIds) route.clientIds = {};
-        route.clientIds[addrId] = lookup.id;
-      }
+      if (lookup) linkClientToStop(batch, route, addrId, lookup, stopRefs[addrId].id);
     } else {
       // Already existed before this sync — refresh descriptive fields + sequence number only;
       // never status/checkinLat/checkinLng/checkinNote/checkinAt (buildCourierRunStops always
@@ -3863,6 +3877,10 @@ async function resyncCourierRun(courier, route, today){
       ['order', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'observatii', 'legGeometry'].forEach(field => {
         runUpdates[`stops.${addrId}.${field}`] = fresh[field];
       });
+      if (missingClientAddrIds.includes(addrId)){
+        const lookup = clientLookups[addrId];
+        if (lookup) linkClientToStop(batch, route, addrId, lookup, stopRefs[addrId].id);
+      }
     }
   });
 
@@ -3925,6 +3943,15 @@ function syncCourierRunListeners(){
   });
 }
 
+// Prag de siguranță pentru un check-in GPS al curierului: dacă e la mai mult de atât față de
+// adresa deja geocodată, NU îl salvăm ca "verificat" — un check-in genuin (chiar la o adresă
+// geocodată puțin imprecis) e de obicei la câteva zeci-sute de metri, nu kilometri distanță.
+// Găsit pe teren: un check-in greșit (curier apăsat din greșeală pe altă oprire, sau GPS
+// derapat) s-a salvat ca "verificat" și a stricat silențios geocodarea clientului respectiv
+// la fiecare comandă viitoare — baza de adrese verificate face exact match pe text, deci nimic
+// nu o mai corecta automat după aceea.
+const CHECKIN_VERIFY_SANITY_KM = 0.2;
+
 /** Applies a courier's live check-ins/notes/delivery status onto the matching dispatcher-side addresses. */
 function applyCourierRunUpdates(runData){
   if (!runData || !runData.stops) return;
@@ -3933,7 +3960,13 @@ function applyCourierRunUpdates(runData){
     const addr = state.addresses.find(a => String(a.id) === String(addrId));
     if (!addr) return;
     if (stop.checkinLat != null && stop.checkinLng != null){
-      saveVerifiedAddress(addr.raw, stop.checkinLat, stop.checkinLng);
+      const tooFar = addr.lat != null && addr.lng != null &&
+        haversine(addr.lat, addr.lng, stop.checkinLat, stop.checkinLng) > CHECKIN_VERIFY_SANITY_KM;
+      if (tooFar){
+        console.warn(`Check-in curier prea departe de adresa cunoscută pentru "${addr.raw}" — ignorat, nu salvez ca verificată.`);
+      } else {
+        saveVerifiedAddress(addr.raw, stop.checkinLat, stop.checkinLng);
+      }
     }
     if (stop.observatii != null && stop.observatii !== addr.observatii){
       addr.observatii = stop.observatii;

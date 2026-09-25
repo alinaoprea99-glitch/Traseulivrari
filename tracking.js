@@ -71,15 +71,17 @@ const ICONS = {
   note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.6 8.4A9 9 0 0 1 8 19l-4 1 1.3-3.7A8.3 8.3 0 0 1 4 11.5 8.4 8.4 0 0 1 12.5 3 8.4 8.4 0 0 1 21 11.5z"/></svg>'
 };
 
-// ---- Map: client's fixed home pin + the courier's live position, plus a live driving route
-// line straight from the courier's current position to THIS stop only — computed fresh via
-// OSRM (see fetchRouteAndEta below), never the dispatcher's full multi-stop geometry, so no
-// other client's location is ever revealed (stops/{stopId} deliberately never carries it —
-// see firestore.rules / app.js ensureCourierRun). ----
+// ---- Map: client's fixed home pin + the courier's live position, plus the REAL remaining
+// driving route (through any stops still ahead, not a straight line to this client — see
+// formatEtaText/computeCourierEtas in functions/index.js) and neutral, unlabeled dots for those
+// intermediate stops. Never the dispatcher's full multi-stop geometry with names/addresses
+// attached — stops/{stopId} only ever gets bare coordinates for stops ahead, nothing else
+// (see firestore.rules / app.js ensureCourierRun). ----
 let trackMap = null;
 let homeMarker = null;
 let courierMarker = null;
 let routeLineLayer = null;
+let intermediateStopsLayer = null;
 
 function initMapIfNeeded(){
   if (trackMap) return;
@@ -89,46 +91,23 @@ function initMapIfNeeded(){
     attribution: '© OpenStreetMap contributors © OpenFreeMap'
   }).addTo(trackMap);
   routeLineLayer = L.layerGroup().addTo(trackMap);
+  intermediateStopsLayer = L.layerGroup().addTo(trackMap);
 }
 
-// ---- ETA: recomputed via OSRM whenever the courier's position actually changes (keyed off
-// courierLat/Lng, not on every snapshot — the courier position only updates every ~15s while
-// pending, and the 30s "actualizat acum X" refresh tick shouldn't trigger a redundant fetch). ----
-let etaFetchedForKey = null;
-let etaText = '';
-let etaLoading = false;
-
-async function fetchRouteAndEta(data){
-  const key = `${data.courierLat},${data.courierLng}`;
-  if (key === etaFetchedForKey) return;
-  etaFetchedForKey = key;
-  etaLoading = true;
-  updateStatusCard(stopData);
-
-  try {
-    const url = `https://router.project-osrm.org/route/v1/driving/${data.courierLng},${data.courierLat};${data.lng},${data.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url);
-    const json = await res.json();
-    if (json.code === 'Ok' && json.routes && json.routes.length){
-      const route = json.routes[0];
-      const driveMin = Math.round(route.duration / 60);
-      const km = (route.distance / 1000).toFixed(1);
-      const arrival = new Date(Date.now() + route.duration * 1000);
-      const arrivalStr = `${arrival.getHours().toString().padStart(2, '0')}:${arrival.getMinutes().toString().padStart(2, '0')}`;
-      etaText = `⏱ ~${driveMin} min (sosire ~${arrivalStr}) · ${km} km`;
-
-      routeLineLayer.clearLayers();
-      const latlngs = route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
-      L.polyline(latlngs, { color: '#FF5A1F', weight: 4, opacity: 0.75 }).addTo(routeLineLayer);
-    } else {
-      etaText = '';
-    }
-  } catch (e){
-    console.error('Nu am putut calcula timpul estimat de sosire', e);
-    etaText = '';
-  }
-  etaLoading = false;
-  if (stopData) updateStatusCard(stopData);
+/**
+ * Timpul/distanța/geometria traseului NU se mai calculează aici — vin gata calculate din
+ * Firestore (courierEtaMinutes/courierEtaKm/courierRouteGeometry pe stops/{stopId}), scrise de
+ * Cloud Function-ul syncCourierRunToStops (functions/index.js), singurul loc cu acces la tot
+ * traseul curierului — un client nu are voie (vezi firestore.rules), și de-aia varianta veche
+ * calcula aici o rută DIRECTĂ curier->client, care ignora complet opririle dintre ei și arăta
+ * un timp greșit. Sincron, fără fetch — se actualizează automat la fiecare snapshot Firestore.
+ */
+function formatEtaText(data){
+  if (data.courierEtaMinutes == null) return '';
+  const arrival = new Date(Date.now() + data.courierEtaMinutes * 60000);
+  const arrivalStr = `${arrival.getHours().toString().padStart(2, '0')}:${arrival.getMinutes().toString().padStart(2, '0')}`;
+  const kmPart = data.courierEtaKm != null ? ` · ${data.courierEtaKm} km` : '';
+  return `⏱ ~${data.courierEtaMinutes} min (sosire ~${arrivalStr})${kmPart}`;
 }
 
 function updateMap(data){
@@ -169,12 +148,20 @@ function updateMap(data){
     else trackMap.setView([data.lat, data.lng], 15);
   }
 
+  routeLineLayer.clearLayers();
+  intermediateStopsLayer.clearLayers();
   if (showCourier){
-    fetchRouteAndEta(data);
-  } else {
-    routeLineLayer.clearLayers();
-    etaFetchedForKey = null;
-    etaText = '';
+    if (Array.isArray(data.courierRouteGeometry) && data.courierRouteGeometry.length > 1){
+      const latlngs = data.courierRouteGeometry.map((p) => [p.lat, p.lng]);
+      L.polyline(latlngs, { color: '#FF5A1F', weight: 4, opacity: 0.75 }).addTo(routeLineLayer);
+    }
+    // Puncte neutre (fără nume/adresă/orice alt detaliu) pentru opririle curierului dinaintea
+    // acestui client — arată vizual "cât mai are de mers", fără să dezvăluie cine/ce e acolo.
+    (data.courierIntermediateStops || []).forEach((p) => {
+      L.circleMarker([p.lat, p.lng], {
+        radius: 4, weight: 1, color: '#fff', fillColor: '#8B9A9B', fillOpacity: 0.9, interactive: false
+      }).addTo(intermediateStopsLayer);
+    });
   }
 }
 
@@ -203,7 +190,7 @@ function buildStatusCardInner(data){
   }
   const showCourier = status === 'pending' && data.courierLat != null && data.courierLng != null;
   const etaLine = showCourier
-    ? `<div class="status-eta">${etaText || (etaLoading ? 'Se calculează timpul estimat…' : '')}</div>`
+    ? `<div class="status-eta">${formatEtaText(data) || 'Se calculează timpul estimat…'}</div>`
     : '';
   const updatedLine = (status === 'pending' && data.courierUpdatedAt)
     ? `<div class="status-updated">Poziție actualizată ${timeAgo(data.courierUpdatedAt)}</div>`
