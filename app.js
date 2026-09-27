@@ -12,6 +12,7 @@ const state = {
   addresses: [],      // {id, raw, details, clientName, phone, amount, paymentMethod, lat, lng, status:'pending'|'ok'|'error', courierId:null}
   routes: {},         // courierId -> {order:[addressId...], legs:[{distKm,durMin}], totalKm, totalMin}
   routeSelection: new Set(), // address ids currently checked in the Trasee tab, for bulk move
+  verifiedAddresses: {}, // addressLookupKey -> {lat,lng,originalText,savedAt} — synced live from dispatcherData/verifiedAddresses, see saveVerifiedAddress
   nextCourierId: 1,
   nextAddrId: 1,
 };
@@ -225,6 +226,20 @@ function initFirestoreSync(){
     updateExportButtonsState();
     syncCourierRunListeners();
   }, (err) => console.error('Nu am putut sincroniza traseele', err));
+
+  // Faza 7: baza de adrese verificate trăia doar în localStorage (per browser/dispozitiv) — o
+  // corecție făcută pe un dispozitiv nu ajungea NICIODATĂ pe altul. Găsit pe teren: aceeași
+  // adresă ("Razelor 22") s-a mapat greșit, corectată manual, apoi s-a mapat greșit DIN NOU la
+  // o comandă viitoare — pentru că acea comandă a fost importată pe un alt dispozitiv, care încă
+  // avea (sau regenera) coordonata veche greșită. Acum sincronizată live prin Firestore, la fel
+  // ca restul datelor de mai sus — o corecție făcută oriunde e disponibilă imediat peste tot.
+  let verifiedAddressesLoadedOnce = false;
+  db.collection('dispatcherData').doc('verifiedAddresses').onSnapshot((doc) => {
+    state.verifiedAddresses = (doc.exists && doc.data().entries) || {};
+    updateVerifiedDbCounter();
+    if (!verifiedAddressesLoadedOnce) migrateLocalVerifiedAddressesIfNeeded();
+    verifiedAddressesLoadedOnce = true;
+  }, (err) => console.error('Nu am putut sincroniza baza de adrese verificate', err));
 }
 
 // Incoming courier check-ins/notes/status now arrive live via syncCourierRunListeners/
@@ -758,8 +773,7 @@ function updateVerifiedDbCounter(){
 }
 
 function showVerifiedDbManager(){
-  const db = loadVerifiedAddressDB();
-  const entries = Object.entries(db).sort((a, b) => (b[1].savedAt || '').localeCompare(a[1].savedAt || ''));
+  const entries = Object.entries(state.verifiedAddresses).sort((a, b) => (b[1].savedAt || '').localeCompare(a[1].savedAt || ''));
 
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
@@ -795,11 +809,8 @@ function showVerifiedDbManager(){
 
   overlay.querySelectorAll('[data-remove-verified]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const db = loadVerifiedAddressDB();
-      delete db[btn.dataset.removeVerified];
-      saveVerifiedAddressDB(db);
+      removeVerifiedAddress(btn.dataset.removeVerified); // already the normalized lookup key — addressLookupKey() is a no-op on it
       btn.closest('.verified-db-row').remove();
-      updateVerifiedDbCounter();
     });
   });
 
@@ -807,18 +818,16 @@ function showVerifiedDbManager(){
   if (clearAllBtn){
     clearAllBtn.addEventListener('click', () => {
       if (!confirm('Sigur vrei să ștergi toate adresele din baza verificată? Această acțiune nu poate fi anulată.')) return;
-      saveVerifiedAddressDB({});
-      updateVerifiedDbCounter();
+      Object.keys(state.verifiedAddresses).forEach(key => removeVerifiedAddress(key));
       close();
     });
   }
 
-  // Export/import as a JSON file — this DB lives in localStorage, which is per-DOMAIN, so it
-  // doesn't carry over on its own when the app moves to a new hosting URL (e.g. GitHub Pages
-  // -> Firebase Hosting): export from the old origin, import here on the new one.
+  // Export/import ca fișier JSON — util pentru backup manual sau transfer între proiecte
+  // Firebase separate; sincronizarea zilnică între dispozitive se face acum automat prin
+  // Firestore (vezi initFirestoreSync), nu mai e nevoie de export/import pentru asta.
   document.getElementById('vdbExportBtn').addEventListener('click', () => {
-    const fullDb = loadVerifiedAddressDB();
-    const blob = new Blob([JSON.stringify(fullDb, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(state.verifiedAddresses, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -838,15 +847,14 @@ function showVerifiedDbManager(){
       try {
         const imported = JSON.parse(reader.result);
         if (!imported || typeof imported !== 'object' || Array.isArray(imported)) throw new Error('format invalid');
-        const current = loadVerifiedAddressDB();
-        const merged = { ...current, ...imported }; // imported entries win on key collisions
-        saveVerifiedAddressDB(merged);
-        updateVerifiedDbCounter();
-        showToast(`${Object.keys(imported).length} adrese importate (total acum: ${Object.keys(merged).length}).`);
+        Object.entries(imported).forEach(([key, entry]) => {
+          if (entry && entry.lat != null && entry.lng != null) saveVerifiedAddress(entry.originalText || key, entry.lat, entry.lng);
+        });
+        showToast(`${Object.keys(imported).length} adrese importate.`);
         close();
         showVerifiedDbManager();
       } catch (e){
-        showToast('Fișierul nu e valid — exportă din nou din pagina veche și încearcă din nou.', true);
+        showToast('Fișierul nu e valid — exportă din nou și încearcă din nou.', true);
       }
     };
     reader.readAsText(file);
@@ -1703,30 +1711,20 @@ function renderAddresses(){
 // -------------------------------------------------------------------
 const geocodeCache = new Map();
 
-// ---- Persistent verified-address database (localStorage) ----------
-// Once an address has been manually confirmed as correctly located (dragged on the map,
-// or edited and re-confirmed), its exact text + coordinates are saved here. Future imports
-// of the SAME exact address text skip Nominatim entirely and reuse the verified position —
-// this is how repeat customers' addresses get more reliable over time.
-const VERIFIED_ADDR_STORAGE_KEY = 'trasee-curieri:verified-addresses';
-
-function loadVerifiedAddressDB(){
-  try {
-    const raw = localStorage.getItem(VERIFIED_ADDR_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch (e){
-    console.error('Could not read verified address DB', e);
-    return {};
-  }
-}
-
-function saveVerifiedAddressDB(db){
-  try {
-    localStorage.setItem(VERIFIED_ADDR_STORAGE_KEY, JSON.stringify(db));
-  } catch (e){
-    console.error('Could not save verified address DB', e);
-  }
-}
+// ---- Persistent verified-address database (Firestore: dispatcherData/verifiedAddresses) ----
+// Once an address has been manually confirmed as correctly located (dragged on the map, or
+// confirmed via the courier's GPS check-in), its exact text + coordinates are saved here.
+// Future imports of the SAME exact address text skip Nominatim entirely and reuse the verified
+// position — this is how repeat customers' addresses get more reliable over time.
+//
+// Faza 7: this used to live in localStorage (per browser/device only) — a correction made on
+// one device never reached any other device. Found on the field: "Razelor 22" got fixed once,
+// then broke again on a LATER order, because that order was imported on a different
+// device/browser whose local cache still had (or re-derived) the old wrong coordinate. Now
+// synced live via Firestore (see the listener in initFirestoreSync), same pattern as
+// couriers/addresses/routes above — a fix made anywhere is available everywhere immediately.
+// state.verifiedAddresses is the live in-memory mirror, kept fresh by that listener.
+const VERIFIED_ADDR_STORAGE_KEY = 'trasee-curieri:verified-addresses'; // legacy localStorage key — read-only now, only for the one-time migration below
 
 /**
  * Normalizes ONLY whitespace and case for the lookup key — exact text match otherwise,
@@ -1739,25 +1737,63 @@ function addressLookupKey(address){
 }
 
 function getVerifiedAddress(address){
-  const db = loadVerifiedAddressDB();
-  return db[addressLookupKey(address)] || null;
+  return state.verifiedAddresses[addressLookupKey(address)] || null;
 }
 
+/** Writes to the local mirror immediately (so a geocode call right after this, same session, sees it without waiting for the round-trip) — the live listener re-confirms the same value moments later, a harmless no-op. */
 function saveVerifiedAddress(address, lat, lng){
-  const db = loadVerifiedAddressDB();
-  db[addressLookupKey(address)] = { lat, lng, originalText: address, savedAt: new Date().toISOString() };
-  saveVerifiedAddressDB(db);
+  const key = addressLookupKey(address);
+  const entry = { lat, lng, originalText: address, savedAt: new Date().toISOString() };
+  state.verifiedAddresses[key] = entry;
   updateVerifiedDbCounter();
+  db.collection('dispatcherData').doc('verifiedAddresses')
+    .set({ entries: { [key]: entry } }, { merge: true }) // nested object literal — Firestore merges recursively, only touches this one key
+    .catch(e => console.error('Nu am putut salva adresa verificată', e));
 }
 
 function removeVerifiedAddress(address){
-  const db = loadVerifiedAddressDB();
-  delete db[addressLookupKey(address)];
-  saveVerifiedAddressDB(db);
+  const key = addressLookupKey(address);
+  delete state.verifiedAddresses[key];
+  updateVerifiedDbCounter();
+  db.collection('dispatcherData').doc('verifiedAddresses')
+    .update({ [`entries.${key}`]: firebase.firestore.FieldValue.delete() }) // dot-path — only .update() (not .set) treats this as a nested field
+    .catch(e => console.error('Nu am putut șterge adresa verificată', e));
 }
 
 function countVerifiedAddresses(){
-  return Object.keys(loadVerifiedAddressDB()).length;
+  return Object.keys(state.verifiedAddresses).length;
+}
+
+/**
+ * O singură dată per dispozitiv, la primul snapshot: dacă acest browser mai are adrese
+ * verificate din vechea bază locală (localStorage), le trimite în Firestore — dar NUMAI dacă
+ * intrarea locală e mai nouă decât ce e deja sincronizat (savedAt), ca un dispozitiv cu o
+ * corecție veche/greșită să nu poată suprascrie o corecție deja făcută mai recent în altă parte.
+ */
+function migrateLocalVerifiedAddressesIfNeeded(){
+  let local;
+  try {
+    const raw = localStorage.getItem(VERIFIED_ADDR_STORAGE_KEY);
+    local = raw ? JSON.parse(raw) : null;
+  } catch (e){
+    local = null;
+  }
+  if (!local || typeof local !== 'object') return;
+
+  const entriesToWrite = {};
+  Object.entries(local).forEach(([key, entry]) => {
+    if (!entry || entry.lat == null || entry.lng == null) return;
+    const remote = state.verifiedAddresses[key];
+    if (!remote || (entry.savedAt && (!remote.savedAt || entry.savedAt > remote.savedAt))){
+      entriesToWrite[key] = entry;
+      state.verifiedAddresses[key] = entry;
+    }
+  });
+  if (!Object.keys(entriesToWrite).length) return;
+  updateVerifiedDbCounter();
+  db.collection('dispatcherData').doc('verifiedAddresses')
+    .set({ entries: entriesToWrite }, { merge: true })
+    .catch(e => console.error('Nu am putut migra baza locală de adrese verificate', e));
 }
 
 /**
