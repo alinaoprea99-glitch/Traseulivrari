@@ -103,6 +103,13 @@ function sleepSeconds(seconds){
   execFileSync('sleep', [String(seconds)]);
 }
 
+// Găsit pe teren (2026-09-27): jumătate din clienți nu au primit mesajul, indiferent de tipul
+// de telefon (Android/iPhone deopotrivă) — nu o problemă de rutare SMS/iMessage, ci foarte
+// probabil operatorul filtrând traficul ca fiind de tip spam/bulk, din cauza ritmului de
+// trimitere (era doar 2s între mesaje — un tipar clar automatizat, nu unul uman). Mărit la 10s,
+// ca traficul să semene mai puțin cu o trimitere în masă.
+const SEND_INTERVAL_SEC = 10;
+
 function main(){
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
@@ -127,6 +134,10 @@ function main(){
   }
 
   console.log(`${entries.length} mesaje de trimis${dryRun ? '  —  DRY RUN: nu se trimite nimic real' : ''}.\n`);
+  if (!dryRun && entries.length > 1){
+    const estMin = Math.round((entries.length - 1) * SEND_INTERVAL_SEC / 60);
+    console.log(`Pauză de ${SEND_INTERVAL_SEC}s între mesaje (trimitere prea rapidă, în rafală, poate fi filtrată ca spam de operator) — durează aproximativ ${estMin} min.\n`);
+  }
 
   const runStartUnixSec = Math.floor(Date.now() / 1000) - 2; // marjă mică, ca să nu rateze mesaje trimise chiar la limită
   let sent = 0, failed = 0;
@@ -151,7 +162,7 @@ function main(){
       console.error(`    ✗ EROARE: ${e.message}\n`);
     }
 
-    if (i < entries.length - 1) sleepSeconds(2); // pauză scurtă între mesaje
+    if (i < entries.length - 1) sleepSeconds(SEND_INTERVAL_SEC);
   });
 
   if (!dryRun){

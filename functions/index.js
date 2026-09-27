@@ -6,12 +6,56 @@
 // clientConfirmed/clientNote. Aceste două funcții sunt singura punte între ele, rulând cu
 // drepturi admin (ocolesc regulile de securitate, care există doar pentru clienți browser).
 const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { defineSecret } = require('firebase-functions/params');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getMessaging } = require('firebase-admin/messaging');
 
 initializeApp();
 const db = getFirestore();
+
+const DISPATCHER_EMAIL = 'alinaoprea99@gmail.com'; // vezi și isDispatcher() din firestore.rules
+const googleMapsApiKey = defineSecret('GOOGLE_MAPS_API_KEY');
+
+/**
+ * Faza 8 — geocodare de rezervă prin Google, DOAR pentru adresele pe care Nominatim (gratuit,
+ * folosit ca primă opțiune în app.js) le-a găsit cu încredere scăzută sau deloc — nu înlocuiește
+ * Nominatim, îl completează. Costă bani (spre deosebire de Nominatim/OSRM), de-aia rulează
+ * server-side, cu cheia ținută ca secret Firebase (niciodată expusă în browser), și verifică
+ * explicit că cel ce apelează e chiar dispecerul — un apel neautorizat ar consuma din cotă/cost
+ * degeaba. components=country:RO oglindește countrycodes=ro folosit deja la Nominatim.
+ */
+exports.geocodeAddressFallback = onCall({ secrets: [googleMapsApiKey], region: 'europe-west1' }, async (request) => {
+  if (!request.auth || request.auth.token.email !== DISPATCHER_EMAIL){
+    throw new HttpsError('permission-denied', 'Doar dispecerul poate folosi geocodarea de rezervă.');
+  }
+  const address = request.data && request.data.address;
+  if (!address || typeof address !== 'string'){
+    throw new HttpsError('invalid-argument', 'Lipsește adresa de geocodat.');
+  }
+
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&components=country:RO&key=${googleMapsApiKey.value()}`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.status !== 'OK' || !json.results || !json.results.length){
+    return { found: false, status: json.status };
+  }
+
+  const result = json.results[0];
+  const loc = result.geometry.location;
+  const locationType = result.geometry.location_type; // ROOFTOP, RANGE_INTERPOLATED, GEOMETRIC_CENTER, APPROXIMATE
+  const hasHouseNumber = (result.address_components || []).some((c) => c.types.includes('street_number'));
+  const confidence = (locationType === 'ROOFTOP' || (hasHouseNumber && locationType === 'RANGE_INTERPOLATED')) ? 'high' : 'medium';
+
+  return {
+    found: true,
+    lat: loc.lat,
+    lng: loc.lng,
+    confidence,
+    displayName: result.formatted_address
+  };
+});
 
 /** Trimite un push la un token dat; șterge tokenul (via onInvalidToken) dacă a expirat/dezinstalat — orice altă eroare doar se loghează, fără să blocheze restul sincronizării. */
 async function sendPush(token, { title, body, link }, onInvalidToken){

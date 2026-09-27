@@ -61,6 +61,7 @@ document.addEventListener('keydown', e => {
 });
 
 const db = firebase.firestore();
+const functionsClient = firebase.app().functions('europe-west1'); // aceeași regiune în care rulează Cloud Functions (vezi functions/index.js)
 let firestoreSyncStarted = false;
 
 /**
@@ -1979,6 +1980,18 @@ function isWithinServiceArea(lat, lng){
          lng >= SERVICE_AREA_BOUNDS.minLng && lng <= SERVICE_AREA_BOUNDS.maxLng;
 }
 
+/**
+ * Faza 8 — rezervă plătită (Google, prin Cloud Function), apelată DOAR când Nominatim (gratuit)
+ * nu a putut oferi un rezultat de încredere ridicată — vezi geocodeOne mai jos. Costă bani, de-
+ * aia nu e primă opțiune; found:false (nu excepție) dacă Google la rândul lui nu găsește nimic,
+ * ca apelantul să poată reveni senin la comportamentul de dinainte (fallback la Nominatim).
+ */
+async function geocodeAddressFallback(address){
+  const call = functionsClient.httpsCallable('geocodeAddressFallback');
+  const res = await call({ address });
+  return res.data;
+}
+
 async function geocodeOne(address, allowOutOfArea = false){
   const cacheKey = allowOutOfArea ? `${address}__allowOOA` : address;
   if (geocodeCache.has(cacheKey)) return geocodeCache.get(cacheKey);
@@ -2034,6 +2047,30 @@ async function geocodeOne(address, allowOutOfArea = false){
       console.error('Geocode error', e);
     }
     if (variant !== variants[variants.length - 1]) await sleep(1000); // respect Nominatim rate limit between cascade attempts
+  }
+
+  // Nominatim nu a dat un rezultat de încredere ridicată (nici măcar unul mediu/slab, sau doar
+  // în afara zonei) — o ultimă încercare, cu Google, înainte de a renunța sau a accepta un
+  // rezultat slab. Nu se apelează dacă am găsit deja "high" mai sus (acolo funcția a și
+  // returnat deja). Eșecul acestui apel (rețea, cotă, etc.) nu blochează restul cascadei —
+  // doar continuă cu ce a găsit deja Nominatim.
+  if (!bestResult || bestResult.confidence !== 'high'){
+    try {
+      const fallback = await geocodeAddressFallback(address);
+      if (fallback && fallback.found && isWithinServiceArea(fallback.lat, fallback.lng)){
+        const result = {
+          lat: fallback.lat, lng: fallback.lng,
+          confidence: fallback.confidence,
+          matchedQuery: address,
+          displayName: fallback.displayName || '',
+          source: 'google'
+        };
+        geocodeCache.set(cacheKey, result);
+        return result;
+      }
+    } catch (e){
+      console.error('Geocodare de rezervă (Google) eșuată', e);
+    }
   }
 
   if (!bestResult && allowOutOfArea && bestOutOfAreaResult){
