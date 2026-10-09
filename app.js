@@ -863,6 +863,42 @@ function showVerifiedDbManager(){
   });
 }
 
+/**
+ * Re-geocodes a single address in place — shared by the edit form's save flow and by the
+ * "reîncearcă" button on a failed ("✕ neidentificată") address. Separate function (not just
+ * re-running the bulk "Localizează adrese" pass) so a single stuck address — e.g. one that
+ * failed before the Google fallback existed (see geocodeOne) — can be retried on its own,
+ * right from the address list, without needing to open the edit form first.
+ */
+async function retryGeocodeAddress(addr){
+  showToast('Se re-localizează adresa…');
+  const result = await geocodeOne(addr.raw, addr.allowOutOfArea, true);
+  if (result && result.outOfArea){
+    addr.status = 'error';
+    addr.confidence = null;
+    addr.outOfArea = true;
+    showToast('Adresa este în afara zonei București/Ilfov. Bifează "permite în afara zonei" dacă vrei să o accepți.', true);
+  } else if (result){
+    addr.lat = result.lat;
+    addr.lng = result.lng;
+    addr.status = 'ok';
+    addr.confidence = result.confidence;
+    addr.outOfArea = !isWithinServiceArea(result.lat, result.lng);
+    if (result.confidence === 'high' && !addr.outOfArea){
+      saveVerifiedAddress(addr.raw, result.lat, result.lng);
+    }
+    showToast(addr.outOfArea ? 'Adresă localizată în afara zonei (permis manual).' : 'Adresă re-localizată cu succes.');
+  } else {
+    addr.status = 'error';
+    addr.confidence = null;
+    showToast('Nu am putut localiza adresa.', true);
+  }
+  renderAddresses();
+  renderCouriers();
+  maybeShowGeocodeButton();
+  redrawMap();
+}
+
 function showEditAddressForm(addrId){
   const addr = state.addresses.find(a => a.id === addrId);
   if (!addr) return;
@@ -990,32 +1026,7 @@ function showEditAddressForm(addrId){
     // re-geocode immediately so the user sees the result of the new flag right away,
     // instead of waiting for the next bulk "Localizează adresele" / auto-assign pass
     if (addr.status === 'pending'){
-      showToast('Se re-localizează adresa…');
-      const result = await geocodeOne(addr.raw, addr.allowOutOfArea);
-      if (result && result.outOfArea){
-        addr.status = 'error';
-        addr.confidence = null;
-        addr.outOfArea = true;
-        showToast('Adresa este în afara zonei București/Ilfov. Bifează "permite în afara zonei" dacă vrei să o accepți.', true);
-      } else if (result){
-        addr.lat = result.lat;
-        addr.lng = result.lng;
-        addr.status = 'ok';
-        addr.confidence = result.confidence;
-        addr.outOfArea = !isWithinServiceArea(result.lat, result.lng);
-        if (result.confidence === 'high' && !addr.outOfArea){
-          saveVerifiedAddress(addr.raw, result.lat, result.lng);
-        }
-        showToast(addr.outOfArea ? 'Adresă localizată în afara zonei (permis manual).' : 'Adresă re-localizată cu succes.');
-      } else {
-        addr.status = 'error';
-        addr.confidence = null;
-        showToast('Nu am putut localiza adresa.', true);
-      }
-      renderAddresses();
-      renderCouriers();
-      maybeShowGeocodeButton();
-      redrawMap();
+      await retryGeocodeAddress(addr);
     }
   });
 }
@@ -1527,7 +1538,7 @@ function renderAddresses(){
     else if (a.status === 'error'){
       statusHtml = a.outOfArea
         ? `<div class="addr-status err">✕ în afara zonei (București/Ilfov) <button class="addr-action-link" data-edit="${a.id}" style="font-size:10.5px;">corectează</button></div>`
-        : `<div class="addr-status err">✕ neidentificată</div>`;
+        : `<div class="addr-status err">✕ neidentificată <button class="addr-action-link" data-retry-geocode="${a.id}" style="font-size:10.5px;">reîncearcă</button></div>`;
     }
 
     const courier = state.couriers.find(c => c.id === a.courierId);
@@ -1592,6 +1603,13 @@ function renderAddresses(){
 
   list.querySelectorAll('[data-restore]').forEach(btn => {
     btn.addEventListener('click', () => restoreCancelledStop(parseInt(btn.dataset.restore)));
+  });
+
+  list.querySelectorAll('[data-retry-geocode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const addr = state.addresses.find(a => a.id === parseInt(btn.dataset.retryGeocode));
+      if (addr) retryGeocodeAddress(addr);
+    });
   });
 
   list.querySelectorAll('.addr-courier-select').forEach(sel => {
@@ -1992,9 +2010,12 @@ async function geocodeAddressFallback(address){
   return res.data;
 }
 
-async function geocodeOne(address, allowOutOfArea = false){
+async function geocodeOne(address, allowOutOfArea = false, skipCache = false){
   const cacheKey = allowOutOfArea ? `${address}__allowOOA` : address;
-  if (geocodeCache.has(cacheKey)) return geocodeCache.get(cacheKey);
+  // skipCache: a manual "reîncearcă" must always make a fresh attempt, never return a stale
+  // in-memory failure from earlier in the same session (e.g. an address that failed before the
+  // Google fallback existed, or a transient network error) — the whole point of a retry button.
+  if (!skipCache && geocodeCache.has(cacheKey)) return geocodeCache.get(cacheKey);
 
   // 1. Check the persistent verified-address database first — exact text match only.
   //    Skips Nominatim entirely for addresses we've already confirmed correct before.
