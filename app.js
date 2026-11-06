@@ -666,6 +666,10 @@ function renderCouriers(){
         computeDeliveryWindows(courier, state.routes[courier.id]);
         renderRouteSummary();
         showToast(`Intervale de livrare actualizate pentru ${courier.name}.`);
+        // Dacă traseul a fost deja trimis, noile intervale ajung automat la curier și, prin
+        // functions/index.js syncCourierRunToStops, pe pagina de urmărire a clientului (care
+        // resetează și confirmarea „Voi fi acasă” dacă intervalul clientului s-a schimbat).
+        syncRouteToCourierIfSent(courier.id);
       }
       renderCouriers();
     });

@@ -129,7 +129,20 @@ exports.syncCourierRunToStops = onDocumentUpdated('courierRuns/{runId}', async (
       ? pendingOrders.filter((o) => o < s.order).length
       : 0;
     const eta = etas[addrKey];
+    // Intervalul se poate schimba după trimitere (dispecerul modifică ora de plecare) — îl
+    // propagăm pe pagina clientului. Dacă s-a schimbat față de cel deja existent, confirmarea
+    // „Voi fi acasă” dată pentru intervalul vechi nu mai e valabilă: o resetăm (fără push —
+    // syncClientResponseToCourierRun trimite notificări doar la confirmare, nu la retragere)
+    // și marcăm winStartChanged ca pagina clientului să-i ceară să confirme din nou.
+    const prevStop = before && before.stops ? before.stops[addrKey] : null;
+    const winChanged = !!(prevStop && prevStop.winStart && s.winStart && prevStop.winStart !== s.winStart);
+    const winFields = { winStart: s.winStart || '' };
+    if (winChanged){
+      winFields.clientConfirmed = null;
+      winFields.winStartChanged = true;
+    }
     batch.update(db.collection('stops').doc(s.stopId), {
+      ...winFields,
       status,
       stopsAhead,
       courierLat: after.lastPos ? after.lastPos.lat : null,

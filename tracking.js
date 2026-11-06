@@ -232,6 +232,8 @@ function wireActions(){
       stopData.clientConfirmed = newVal;
       confirmBtn.classList.toggle('active', newVal === true);
       confirmBtn.innerHTML = `${ICONS.check} ${newVal === true ? 'Ai confirmat: voi fi acasă' : 'Voi fi acasă'}`;
+      const hint = document.getElementById('winChangedHint');
+      if (hint) hint.style.display = stopData.winStartChanged && newVal !== true ? '' : 'none';
       updateStopField({ clientConfirmed: newVal });
     });
   }
@@ -314,7 +316,7 @@ function updateHistorySection(){
  */
 function shellHtml(data){
   const { statusClass, html: statusInner } = buildStatusCardInner(data);
-  const windowChip = data.winStart ? `<span class="chip time">${ICONS.clock}${escapeHtml(data.winStart)}</span>` : '';
+  const windowChip = `<span class="chip time" id="windowChip" style="display:${data.winStart ? '' : 'none'};">${ICONS.clock}<span id="windowChipText">${escapeHtml(data.winStart || '')}</span></span>`;
   const paymentChip = (data.amount != null || data.payment)
     ? `<span class="chip cash">${ICONS.cash}${data.amount != null ? Number(data.amount).toFixed(2) + ' lei' : ''}${data.amount != null && data.payment ? ' · ' : ''}${escapeHtml(data.payment || '')}</span>`
     : '';
@@ -334,6 +336,7 @@ function shellHtml(data){
       </div>
 
       <div class="card" id="actionsCard" style="display:${data.status === 'pending' ? '' : 'none'};">
+        <div class="details-line" id="winChangedHint" style="display:${data.winStartChanged && !confirmed ? '' : 'none'}; margin-bottom:8px;">${ICONS.clock}Intervalul de livrare s-a modificat. Te rugăm să confirmi din nou că vei fi acasă.</div>
         <button class="confirm-btn ${confirmed ? 'active' : ''}" id="confirmBtn">${ICONS.check} ${confirmed ? 'Ai confirmat: voi fi acasă' : 'Voi fi acasă'}</button>
         <div class="note-editor">
           <label class="note-label">${ICONS.note}Observație pentru curier (opțional)</label>
@@ -394,7 +397,31 @@ function render(){
     updateStatusCard(stopData);
     const actionsCard = document.getElementById('actionsCard');
     if (actionsCard) actionsCard.style.display = stopData.status === 'pending' ? '' : 'none';
+    updateWindowAndConfirm(stopData);
   }
+}
+
+/**
+ * Intervalul (winStart) și confirmarea pot fi schimbate din afară după ce pagina e deja deschisă:
+ * dispecerul mută ora de plecare, iar functions/index.js syncCourierRunToStops actualizează
+ * intervalul și resetează confirmarea. Actualizăm doar aceste elemente punctual, fără să
+ * reconstruim cardul (ar întrerupe clientul dacă scrie o observație).
+ */
+function updateWindowAndConfirm(data){
+  const chip = document.getElementById('windowChip');
+  const chipText = document.getElementById('windowChipText');
+  if (chip && chipText){
+    chip.style.display = data.winStart ? '' : 'none';
+    chipText.textContent = data.winStart || '';
+  }
+  const confirmed = data.clientConfirmed === true;
+  const confirmBtn = document.getElementById('confirmBtn');
+  if (confirmBtn && confirmBtn.classList.contains('active') !== confirmed){
+    confirmBtn.classList.toggle('active', confirmed);
+    confirmBtn.innerHTML = `${ICONS.check} ${confirmed ? 'Ai confirmat: voi fi acasă' : 'Voi fi acasă'}`;
+  }
+  const hint = document.getElementById('winChangedHint');
+  if (hint) hint.style.display = data.winStartChanged && !confirmed ? '' : 'none';
 }
 
 // Keeps "actualizat acum X min" fresh even between snapshots (courier may be stationary for a while).
