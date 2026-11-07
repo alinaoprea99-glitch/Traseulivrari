@@ -5031,6 +5031,14 @@ function buildDeliveryMessage(name, dayPhrase, windowText, clientLink){
   return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${linkLine}\n\nTe rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 
+/** „azi 14:05” / „5 nov., 19:40” — când a fost descărcat mesajul pentru un client (addr.messageSentAt). */
+function formatMessageSentAt(iso){
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const time = d.toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? `azi ${time}` : `${d.toLocaleDateString('ro-RO', { day: 'numeric', month: 'short' })}, ${time}`;
+}
+
 /** All non-cancelled stops that are part of a generated route and have a computed delivery window. */
 function getMessageableStops(){
   const stops = [];
@@ -5065,6 +5073,9 @@ async function showGenerateMessagesModal(){
         <label>Ziua livrării (implicit, pentru toți)</label>
         <input type="text" id="gmDayPhrase" value="maine">
       </div>
+      <label id="gmOnlyNewWrap" style="display:none; align-items:center; gap:6px; margin-bottom:10px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" id="gmOnlyNew"> <span>Doar clienții fără mesaj trimis <span id="gmOnlyNewCount" class="hint"></span></span>
+      </label>
       <div id="gmRows" style="max-height:42vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;">
         <div class="loading-row" id="gmLoadingRow" style="justify-content:center;"><span class="spinner sp-dark"></span><span>Se pregătesc linkurile de urmărire…</span></div>
       </div>
@@ -5117,7 +5128,7 @@ async function showGenerateMessagesModal(){
     const row = document.createElement('div');
     row.className = 'gm-row';
     row.innerHTML = `
-      <div class="gm-fullname">${escapeHtml(addr.clientName || addr.raw)}</div>
+      <div class="gm-fullname">${escapeHtml(addr.clientName || addr.raw)}${addr.messageSentAt ? ` <span class="hint" style="font-weight:normal;">· Mesaj trimis deja (${escapeHtml(formatMessageSentAt(addr.messageSentAt))})</span>` : ''}</div>
       <div class="gm-row-top">
         <input type="text" class="gm-name-input" data-id="${addr.id}" value="${escapeHtml(getGreetingFirstName(addr))}" placeholder="prenume">
         <span class="gm-phone">${escapeHtml(addr.phone)}</span>
@@ -5144,6 +5155,8 @@ async function showGenerateMessagesModal(){
     updatePreview();
     rowsEl.appendChild(row);
     return {
+      stop,
+      row,
       updatePreview,
       syncDay: (val) => {
         if (dayOverrides.has(addr.id)) return; // rând editat individual — nu-l suprascrie
@@ -5154,25 +5167,57 @@ async function showGenerateMessagesModal(){
   }
 
   const rows = stops.map(renderRow);
+
+  // „Doar clienții fără mesaj trimis” — pentru adresele adăugate după ce mesajele au fost deja
+  // trimise (vezi insertAddressIntoRoute): un client e marcat „trimis” (addr.messageSentAt) în
+  // momentul în care e inclus într-un fișier descărcat de aici.
+  const onlyNewWrap = overlay.querySelector('#gmOnlyNewWrap');
+  const onlyNewBox = overlay.querySelector('#gmOnlyNew');
+  const downloadBtn = overlay.querySelector('#gmDownloadBtn');
+  const sentCount = stops.filter(st => st.addr.messageSentAt).length;
+  const includedRows = () => rows.filter(r => !(onlyNewBox.checked && r.stop.addr.messageSentAt));
+  const applyOnlyNewFilter = () => {
+    rows.forEach(r => { r.row.style.display = onlyNewBox.checked && r.stop.addr.messageSentAt ? 'none' : ''; });
+    const n = includedRows().length;
+    downloadBtn.textContent = `Descarcă fișierul (${n})`;
+    downloadBtn.disabled = n === 0;
+  };
+  if (sentCount){
+    onlyNewWrap.style.display = 'flex';
+    onlyNewBox.checked = true;
+    overlay.querySelector('#gmOnlyNewCount').textContent = `(${sentCount} au primit deja mesaj)`;
+  }
+  onlyNewBox.addEventListener('change', applyOnlyNewFilter);
+  applyOnlyNewFilter();
+
   dayInput.addEventListener('input', () => {
     const val = dayInput.value.trim();
     rows.forEach(r => r.syncDay(val));
   });
 
-  overlay.querySelector('#gmDownloadBtn').addEventListener('click', () => {
-    saveAddressesToStorage(); // persist any greeting-name corrections made in this review pass
-    const payload = stops.map(({ addr, win, route }) => ({
-      phone: normalizePhoneForMessages(addr.phone),
-      message: buildDeliveryMessage(
-        getGreetingFirstName(addr), overlay.querySelector(`[data-day="${addr.id}"]`).value.trim(), formatWindowForMessage(win),
-        route.clientIds && route.clientIds[addr.id] ? buildClientLink(route.clientIds[addr.id]) : ''
-      )
-    }));
+  downloadBtn.addEventListener('click', () => {
+    const included = includedRows().map(r => r.stop);
+    if (!included.length) return;
+    const payload = included.map(({ addr, win, courier, route: capturedRoute }) => {
+      const route = state.routes[courier.id] || capturedRoute;
+      return {
+        phone: normalizePhoneForMessages(addr.phone),
+        message: buildDeliveryMessage(
+          getGreetingFirstName(addr), overlay.querySelector(`[data-day="${addr.id}"]`).value.trim(), formatWindowForMessage(win),
+          route.clientIds && route.clientIds[addr.id] ? buildClientLink(route.clientIds[addr.id]) : ''
+        )
+      };
+    });
+    const sentAt = new Date().toISOString();
+    included.forEach(({ addr }) => { addr.messageSentAt = sentAt; });
+    saveAddressesToStorage(); // persists messageSentAt + any greeting-name corrections made in this review pass
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mesaje_clienti_${new Date().toISOString().slice(0, 10)}.json`;
+    // ora în nume — a doua descărcare din aceeași zi (doar clienții noi) nu se confundă cu prima
+    const now = new Date();
+    a.download = `mesaje_clienti_${now.toISOString().slice(0, 10)}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}.json`;
     document.body.appendChild(a);
     a.click();
     a.remove();
