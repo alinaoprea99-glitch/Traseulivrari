@@ -663,6 +663,9 @@ function renderCouriers(){
       // recalculate delivery windows immediately if a route already exists for this courier
       // — no need to rerun the full route optimization, only the time offsets change
       if (state.routes[courier.id]){
+        // Schimbarea explicită a orei de plecare recalculează TOATE intervalele, inclusiv cele
+        // păstrate la inserarea unei opriri noi (frozenWindows) — aici chiar vrem intervale noi.
+        delete state.routes[courier.id].frozenWindows;
         computeDeliveryWindows(courier, state.routes[courier.id]);
         renderRouteSummary();
         showToast(`Intervale de livrare actualizate pentru ${courier.name}.`);
@@ -1630,8 +1633,15 @@ function renderAddresses(){
 
       // pull this address out of any existing route (old courier), and append it to the
       // new courier's route order if that courier already has an active route
+      // Curier cu traseu existent: inserăm adresa în locul potrivit fără să reordonăm restul
+      // (vezi insertAddressIntoRoute) și trimitem automat modificarea — înainte era lipită la
+      // coadă și nu ajungea la curier până la retrimiterea manuală a traseului.
+      const destRoute = newCourierId != null ? state.routes[newCourierId] : null;
+      const insertIntoDest = !!(destRoute && destRoute.order.some(x => x !== id));
+
       [oldCourierId, newCourierId].forEach(cid => {
         if (cid == null) return;
+        if (cid === newCourierId && insertIntoDest) return;
         const route = state.routes[cid];
         if (!route) return;
         if (cid === oldCourierId){
@@ -1643,16 +1653,17 @@ function renderAddresses(){
         }
         if (route.order.length){
           recalcRouteDistance(cid);
-        } else {
-          delete state.routes[cid];
         }
+        if (cid === oldCourierId) syncRouteToCourierIfSent(cid);
+        if (!route.order.length) delete state.routes[cid];
       });
 
       renderAddresses();
       renderCouriers();
       renderRouteSummary();
       redrawMap();
-      showToast(newCourierId ? `Adresă alocată manual către ${state.couriers.find(c=>c.id===newCourierId)?.name}.` : 'Adresă scoasă din alocare.');
+      if (insertIntoDest) insertAddressIntoRoute(newCourierId, id);
+      else showToast(newCourierId ? `Adresă alocată manual către ${state.couriers.find(c=>c.id===newCourierId)?.name}.` : 'Adresă scoasă din alocare.');
     });
   });
 
@@ -3403,11 +3414,15 @@ function computeDeliveryWindows(courier, route){
     cumulativeMin += (legs[idx] || 0); // driving time to reach this stop
     const arrivalMin = cumulativeMin;
     const roundedHour = Math.floor(arrivalMin / 60) * 60;
+    // Interval deja comunicat clientului (vezi insertAddressIntoRoute) — rămâne cel trimis, chiar
+    // dacă o oprire inserată ulterior mută sosirea estimată; doar semnalăm dacă îl depășește.
+    const frozen = route.frozenWindows ? route.frozenWindows[addrId] : null;
     windows[addrId] = {
       arrivalMin,
-      windowStart: formatMinutesToTime(roundedHour),
-      windowEnd: formatMinutesToTime(roundedHour + 120),
-      afterLimit: courier.endTimeLimit ? arrivalMin > parseTimeToMinutes(courier.endTimeLimit) : false
+      windowStart: frozen ? frozen.windowStart : formatMinutesToTime(roundedHour),
+      windowEnd: frozen ? frozen.windowEnd : formatMinutesToTime(roundedHour + 120),
+      afterLimit: courier.endTimeLimit ? arrivalMin > parseTimeToMinutes(courier.endTimeLimit) : false,
+      lateForWindow: frozen ? arrivalMin > parseTimeToMinutes(frozen.windowEnd) : false
     };
     cumulativeMin += STOP_BUFFER_MIN; // handoff buffer before heading to the next stop
   });
@@ -3498,7 +3513,7 @@ function renderRouteSummary(){
         : '';
       const win = route.windows ? route.windows[addr.id] : null;
       const windowChip = win
-        ? `<div class="addr-window-chip${win.afterLimit ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
+        ? `<div class="addr-window-chip${win.afterLimit || win.lateForWindow ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}${win.lateForWindow ? ` · depășește intervalul comunicat (sosire ~${formatMinutesToTime(Math.round(win.arrivalMin))})` : ''}</div>`
         : '';
       const obsLine = addr.observatii ? `<div class="addr-obs-line">${ICONS.tag}${escapeHtml(addr.observatii)}</div>` : '';
       const clientConfirmedLine = addr.clientConfirmed === true ? `<div class="addr-client-line">✓ Clientul a confirmat: va fi acasă</div>` : '';
@@ -3789,7 +3804,38 @@ async function resolveClientLookups(addrIds){
  * change AFTER it's already been sent (a cancelled stop, a reassignment), and that needs to
  * actually reach the courier, not silently stop being reflected the moment a run first exists.
  */
-async function ensureCourierRun(courier, route){
+// Trimiterile către același curier rulează STRICT pe rând — mutarea mai multor adrese una după
+// alta pornea câte o resincronizare în fundal pentru fiecare, care se suprapuneau și își
+// suprascriau reciproc rezultatul în courierRuns (găsit pe teren 2026-11-07: o oprire rămasă cu
+// date incomplete, fără stopId, în traseul lui Marius).
+const courierRunSyncQueue = {};
+
+function ensureCourierRun(courier, route){
+  const prev = courierRunSyncQueue[courier.id] || Promise.resolve();
+  // La momentul execuției folosim traseul ACTUAL din state (poate fi alt obiect decât cel primit,
+  // vezi applyRunFieldsToLiveRoute) — doar dacă între timp a fost șters (ultima oprire scoasă)
+  // rămânem pe obiectul primit, ca ștergerea să ajungă totuși la curier.
+  const next = prev.catch(() => {}).then(() => ensureCourierRunNow(courier, state.routes[courier.id] || route));
+  courierRunSyncQueue[courier.id] = next;
+  return next;
+}
+
+/**
+ * Orice "await" din trimitere (căutarea clientului după telefon, commit-ul) lasă loc unei salvări
+ * a traseelor — iar salvarea revine imediat prin onSnapshot pe dispatcherData/routes, care
+ * ÎNLOCUIEȘTE state.routes cu obiecte noi (routesFromFirestore). Ce scriam după await pe obiectul
+ * primit ca parametru (stopIds/clientIds/courierRunId) ajungea deci pe o copie abandonată, iar
+ * saveRoutesToStorage() salva apoi varianta fără ele. Găsit pe teren 2026-11-07: 6 adrese mutate la
+ * Marius și apoi la Alina au rămas în traseul lui Marius, pentru că platforma nu reținuse că i le
+ * trimisese. Aplicăm acum câmpurile pe obiectul primit ȘI pe cel actual din state.
+ */
+function applyRunFieldsToLiveRoute(courierId, route, apply){
+  apply(route);
+  const live = state.routes[courierId];
+  if (live && live !== route) apply(live);
+}
+
+async function ensureCourierRunNow(courier, route){
   // Generated once per courier, then kept forever (persisted via saveCouriersToStorage below) —
   // this is what makes curier.html?courier={id} a permanent, install-once link: the SAME id is
   // reused every day, only its courierLinks/{id}.currentRunId pointer changes.
@@ -3860,12 +3906,16 @@ async function ensureCourierRun(courier, route){
   }, { merge: true });
   await batch.commit();
 
-  route.courierRunId = runRef.id;
-  route.stopIds = {};
-  route.clientIds = {};
+  const stopIds = {};
+  const clientIds = {};
   route.order.forEach(addrId => {
-    route.stopIds[addrId] = stopRefs[addrId].id;
-    if (clientLookups[addrId]) route.clientIds[addrId] = clientLookups[addrId].id;
+    stopIds[addrId] = stopRefs[addrId].id;
+    if (clientLookups[addrId]) clientIds[addrId] = clientLookups[addrId].id;
+  });
+  applyRunFieldsToLiveRoute(courier.id, route, r => {
+    r.courierRunId = runRef.id;
+    r.stopIds = { ...stopIds };
+    r.clientIds = { ...clientIds };
   });
   saveRoutesToStorage();
   saveCouriersToStorage(); // persists courier.persistentId if it was just generated above
@@ -3884,43 +3934,46 @@ async function ensureCourierRun(courier, route){
  * still shows what happened, same philosophy as cancelStop keeping the address itself as a
  * record rather than deleting it).
  */
-/** Links a resolved client lookup to a stop — shared by both the "new stop" and "existing stop missing its link" paths in resyncCourierRun below. */
-function linkClientToStop(batch, route, addrId, lookup, stopId){
-  const update = {
-    phone: lookup.phone,
-    stopIds: firebase.firestore.FieldValue.arrayUnion(stopId),
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-  };
-  if (lookup.isNew) update.createdAt = firebase.firestore.FieldValue.serverTimestamp();
-  batch.set(db.collection('clients').doc(lookup.id), update, { merge: true });
-  if (!route.clientIds) route.clientIds = {};
-  route.clientIds[addrId] = lookup.id;
-}
-
 async function resyncCourierRun(courier, route, today){
-  const runRef = db.collection('courierRuns').doc(route.courierRunId);
-  const existingIds = Object.keys(route.stopIds);
-  const currentIds = route.order.map(String);
-  const newAddrIds = route.order.filter(addrId => !existingIds.includes(String(addrId)));
-  // O oprire deja existentă poate să nu aibă încă un clientId legat — ex: telefonul a fost
-  // adăugat/corectat DUPĂ ce oprirea era deja în traseul trimis curierului, moment în care
-  // lookup-ul de client rula doar pentru opririle noi (newAddrIds), niciodată pentru cele deja
-  // existente — găsit pe teren: linkul de urmărire lipsea din mesajul generat pentru un client
-  // a cărui adresă exista deja în traseu. Reîncercăm aici, la fiecare resincronizare, pentru
-  // orice oprire existentă care are telefon dar încă nu apare în route.clientIds.
-  const missingClientAddrIds = route.order.filter(addrId => {
-    if (newAddrIds.includes(addrId)) return false;
-    const a = state.addresses.find(x => x.id === addrId);
-    return a && a.phone && (!route.clientIds || !route.clientIds[addrId]);
-  });
+  const runId = route.courierRunId;
+  const runRef = db.collection('courierRuns').doc(runId);
+
+  // Sursa de adevăr pentru ce are curierul DE FAPT în traseu e documentul courierRuns, nu
+  // route.stopIds (evidența locală, care se putea pierde — vezi applyRunFieldsToLiveRoute). Îl
+  // citim la fiecare resincronizare, ca orice oprire rămasă acolo dar care nu mai e a acestui
+  // curier să fie ștearsă, chiar dacă platforma „uitase” că i-o trimisese.
+  const runSnap = await runRef.get();
+  if (!runSnap.exists){
+    // Traseul trimis nu mai există — pornim unul nou în locul lui, nu scriem într-un document lipsă.
+    applyRunFieldsToLiveRoute(courier.id, route, r => { delete r.courierRunId; delete r.stopIds; });
+    return ensureCourierRunNow(courier, route);
+  }
+  const runStops = (runSnap.data() && runSnap.data().stops) || {};
+
+  const currentKeys = route.order.map(String);
+  // stopId cunoscut per adresă: întâi din courierRuns (adevărul), apoi din evidența locală
+  // (acoperă o intrare din courierRuns rămasă fără stopId).
+  const knownStopIds = { ...(route.stopIds || {}) };
+  Object.entries(runStops).forEach(([key, s]) => { if (s && s.stopId) knownStopIds[key] = s.stopId; });
 
   const stopRefs = {};
+  const newStopDocIds = [];
   route.order.forEach(addrId => {
-    const existingId = route.stopIds[addrId];
-    stopRefs[addrId] = existingId ? { id: existingId } : db.collection('stops').doc();
+    const known = knownStopIds[String(addrId)];
+    if (known) stopRefs[addrId] = { id: known };
+    else { stopRefs[addrId] = db.collection('stops').doc(); newStopDocIds.push(addrId); }
   });
   const freshStops = buildCourierRunStops(route, stopRefs);
-  const clientLookups = await resolveClientLookups([...newAddrIds, ...missingClientAddrIds]);
+
+  // Legătura cu clientul (linkul de urmărire): pentru opririle noi și pentru orice oprire care
+  // are telefon dar încă nu are client legat (ex: telefonul adăugat după trimitere).
+  const clientIdsBefore = route.clientIds || {};
+  const lookupIds = route.order.filter(addrId => {
+    if (newStopDocIds.includes(addrId)) return true;
+    const a = state.addresses.find(x => x.id === addrId);
+    return a && a.phone && !clientIdsBefore[addrId];
+  });
+  const clientLookups = await resolveClientLookups(lookupIds);
 
   const batch = db.batch();
   // Only ever touches the top-level "stops" key (via stops.* dot-paths below) — firestore.rules'
@@ -3929,21 +3982,27 @@ async function resyncCourierRun(courier, route, today){
   // batch — including the cancelled-stop deletion — was silently rejected by security rules
   // every time, since Firestore batches are all-or-nothing).
   const runUpdates = {};
+  const removedKeys = [];
 
-  existingIds.filter(addrId => !currentIds.includes(addrId)).forEach(addrId => {
-    runUpdates[`stops.${addrId}`] = firebase.firestore.FieldValue.delete();
-    batch.update(db.collection('stops').doc(route.stopIds[addrId]), { status: 'cancelled' });
-    delete route.stopIds[addrId];
-    if (route.clientIds) delete route.clientIds[addrId];
+  Object.keys(runStops).filter(key => !currentKeys.includes(key)).forEach(key => {
+    runUpdates[`stops.${key}`] = firebase.firestore.FieldValue.delete();
+    const sid = runStops[key] && runStops[key].stopId;
+    // Doar opririle încă în așteptare devin „anulate” pe pagina clientului — una deja livrată
+    // (sau nelivrată) rămâne cu statusul ei real.
+    if (sid && (runStops[key].status || 'pending') === 'pending'){
+      batch.update(db.collection('stops').doc(sid), { status: 'cancelled' });
+    }
+    removedKeys.push(key);
   });
 
+  const linkedClientIds = {};
   route.order.forEach(addrId => {
+    const key = String(addrId);
     const fresh = freshStops[addrId];
     if (!fresh) return;
-    if (newAddrIds.includes(addrId)){
-      runUpdates[`stops.${addrId}`] = fresh;
+    if (newStopDocIds.includes(addrId)){
       batch.set(stopRefs[addrId], {
-        runId: route.courierRunId,
+        runId,
         addressId: addrId,
         courierId: courier.id,
         date: today,
@@ -3965,34 +4024,55 @@ async function resyncCourierRun(courier, route, today){
         clientConfirmed: null,
         clientNote: ''
       });
-      route.stopIds[addrId] = stopRefs[addrId].id;
-      const lookup = clientLookups[addrId];
-      if (lookup) linkClientToStop(batch, route, addrId, lookup, stopRefs[addrId].id);
+    }
+    if (!runStops[key]){
+      runUpdates[`stops.${key}`] = fresh;
     } else {
-      // Already existed before this sync — refresh descriptive fields + sequence number only;
+      // Already in the courier's run — refresh descriptive fields + sequence number only;
       // never status/checkinLat/checkinLng/checkinNote/checkinAt (buildCourierRunStops always
       // seeds those as pending/null, which is only correct for a brand new stop).
-      ['order', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'observatii', 'legGeometry'].forEach(field => {
-        runUpdates[`stops.${addrId}.${field}`] = fresh[field];
+      ['order', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'observatii', 'legGeometry', 'stopId'].forEach(field => {
+        runUpdates[`stops.${key}.${field}`] = fresh[field];
       });
-      if (missingClientAddrIds.includes(addrId)){
-        const lookup = clientLookups[addrId];
-        if (lookup) linkClientToStop(batch, route, addrId, lookup, stopRefs[addrId].id);
-      }
+    }
+    const lookup = clientLookups[addrId];
+    if (lookup){
+      const update = {
+        phone: lookup.phone,
+        stopIds: firebase.firestore.FieldValue.arrayUnion(stopRefs[addrId].id),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      if (lookup.isNew) update.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+      batch.set(db.collection('clients').doc(lookup.id), update, { merge: true });
+      linkedClientIds[addrId] = lookup.id;
     }
   });
 
-  batch.update(runRef, runUpdates);
+  if (Object.keys(runUpdates).length) batch.update(runRef, runUpdates);
   await batch.commit();
+
+  // Evidența locală se actualizează DOAR după un commit reușit (înainte se modifica înainte de
+  // commit, deci un eșec o lăsa nesincronizată cu ce are curierul).
+  const stopIds = {};
+  route.order.forEach(addrId => { stopIds[addrId] = stopRefs[addrId].id; });
+  applyRunFieldsToLiveRoute(courier.id, route, r => {
+    if (r.courierRunId && r.courierRunId !== runId) return; // alt traseu între timp — nu-l atingem
+    r.courierRunId = runId;
+    r.stopIds = { ...stopIds };
+    const clientIds = { ...(r.clientIds || {}), ...linkedClientIds };
+    removedKeys.forEach(key => { delete clientIds[key]; });
+    r.clientIds = clientIds;
+  });
+  console.log('[sync-curier] resincronizat', { courierId: courier.id, runId, removed: removedKeys, newStopDocs: newStopDocIds });
   saveRoutesToStorage();
   if (Object.keys(clientLookups).length) saveCouriersToStorage();
-  return route.courierRunId;
+  return runId;
 }
 
 /** Returns the courier's daily link (curier.html?run=...), creating the underlying run if needed. */
 async function createCourierRun(courier, route){
-  await ensureCourierRun(courier, route);
-  return `${appBaseUrl()}curier.html?run=${route.courierRunId}`;
+  const runId = await ensureCourierRun(courier, route);
+  return `${appBaseUrl()}curier.html?run=${runId}`;
 }
 
 /** The courier's permanent, install-once link — same URL every day, see ensureCourierRun/courierLinks. */
@@ -4229,6 +4309,86 @@ async function showSendToCourierModal(courierId){
 }
 
 /**
+ * Inserează o adresă alocată manual pe traseul EXISTENT al unui curier, în locul unde adaugă cel
+ * mai puțin timp de condus (timpi reali OSRM; distanță în linie dreaptă dacă OSRM nu răspunde) —
+ * fără să reordoneze celelalte opriri: ordinea deja comunicată clienților și curierului rămâne.
+ * Nu inserează niciodată înaintea unei opriri deja livrate/nelivrate. Dacă traseul a fost deja
+ * trimis, intervalele opririlor existente rămân cele comunicate (frozenWindows, vezi
+ * computeDeliveryWindows) — doar adresa nouă primește interval calculat — și modificarea ajunge
+ * automat la curier.
+ */
+async function insertAddressIntoRoute(courierId, addrId){
+  const courier = state.couriers.find(c => c.id === courierId);
+  const addr = state.addresses.find(a => a.id === addrId);
+  const route = state.routes[courierId];
+  if (!courier || !addr || !route) return;
+  const existing = route.order.filter(id => id !== addrId);
+  const stops = existing.map(id => state.addresses.find(a => a.id === id));
+  if (stops.some(s => !s) || addr.lat == null || addr.lng == null){
+    // date incomplete — comportamentul vechi (la coadă), mai bine decât să pierdem adresa
+    if (!route.order.includes(addrId)) route.order.push(addrId);
+    recalcRouteDistance(courierId);
+    return;
+  }
+  const end = courier.sameAsStart || courier.end.status !== 'ok' ? courier.start : courier.end;
+  const points = [courier.start, ...stops.map(s => ({ lat: s.lat, lng: s.lng })), { lat: addr.lat, lng: addr.lng }, end];
+  const N = stops.length, NEW = N + 1, END = N + 2;
+
+  let cost;
+  try {
+    const matrix = await fetchDurationMatrix(points);
+    if (!matrix) throw new Error('Table service returned no data');
+    cost = (i, j) => matrix[i][j];
+  } catch (e){
+    console.error('OSRM indisponibil la inserare, folosesc distanța în linie dreaptă', e);
+    cost = (i, j) => haversine(points[i].lat, points[i].lng, points[j].lat, points[j].lng);
+  }
+
+  // Sloturi permise: doar după ultima oprire deja finalizată de curier.
+  let firstSlot = 0;
+  stops.forEach((s, idx) => { if (s.deliveryStatus && s.deliveryStatus !== 'pending') firstSlot = idx + 1; });
+  let bestSlot = N, bestAdded = Infinity;
+  for (let slot = firstSlot; slot <= N; slot++){
+    const prev = slot; // punctul de dinainte: 0 = start, altfel oprirea existentă slot-1 (index slot în points)
+    const next = slot === N ? END : slot + 1;
+    const added = cost(prev, NEW) + cost(NEW, next) - cost(prev, next);
+    if (added < bestAdded){ bestAdded = added; bestSlot = slot; }
+  }
+
+  // Asigurăm din nou traseul actual după await (vezi applyRunFieldsToLiveRoute).
+  const live = state.routes[courierId] || route;
+  if (live.courierRunId && live.windows){
+    live.frozenWindows = { ...(live.frozenWindows || {}) };
+    existing.forEach(id => {
+      const w = live.windows[id];
+      if (w && !live.frozenWindows[id]) live.frozenWindows[id] = { windowStart: w.windowStart, windowEnd: w.windowEnd };
+    });
+  }
+  const liveExisting = live.order.filter(id => id !== addrId);
+  // Dacă ordinea s-a schimbat între timp, ne raportăm la vecinul ales, nu la indexul brut.
+  const anchorId = bestSlot > 0 ? existing[bestSlot - 1] : null;
+  const insertAt = anchorId == null ? Math.min(firstSlot, liveExisting.length) : liveExisting.indexOf(anchorId) + 1;
+  live.order = [...liveExisting.slice(0, insertAt), addrId, ...liveExisting.slice(insertAt)];
+
+  await recomputeRouteFixedOrder(courier, live);
+  const finalRoute = state.routes[courierId] || live;
+  if (finalRoute !== live){
+    ['order', 'frozenWindows', 'totalKm', 'totalMin', 'geometry', 'legGeometries', 'legDurationsMin', 'windows'].forEach(f => { finalRoute[f] = live[f]; });
+  }
+
+  renderAddresses();
+  renderCouriers();
+  renderRouteSummary();
+  redrawMap();
+  syncRouteToCourierIfSent(courierId);
+
+  const position = finalRoute.order.indexOf(addrId) + 1;
+  const late = finalRoute.order.filter(id => finalRoute.windows && finalRoute.windows[id] && finalRoute.windows[id].lateForWindow).length;
+  showToast(`${addr.clientName || addr.raw} a fost inserată ca oprirea ${position} la ${courier.name}; ordinea celorlalte opriri a rămas aceeași.`
+    + (late ? ` Atenție: ${late} ${late === 1 ? 'oprire depășește' : 'opriri depășesc'} intervalul comunicat — vezi tab-ul Trasee.` : ''), late > 0);
+}
+
+/**
  * Moves one address from its current courier's route to another courier's route,
  * appending it at the end of the destination and recomputing distances for both.
  * Mirrors the reassignment logic already used by the dropdown in the Adrese tab.
@@ -4243,8 +4403,14 @@ function moveAddressToCourier(addrId, newCourierId, opts = {}){
   addr.manuallyAssigned = true;
   addr.pinnedPosition = null; // a pinned slot only means something within the courier it was set for
 
+  // Curierul destinație are deja un traseu cu alte opriri: inserăm în locul potrivit, fără să
+  // reordonăm restul (vezi insertAddressIntoRoute) — în loc să lipim adresa la coadă.
+  const destRoute = newCourierId != null ? state.routes[newCourierId] : null;
+  const insertIntoDest = !!(destRoute && destRoute.order.some(id => id !== addrId));
+
   [oldCourierId, newCourierId].forEach(cid => {
     if (cid == null) return;
+    if (cid === newCourierId && insertIntoDest) return;
     let route = state.routes[cid];
     if (!route){
       if (cid !== newCourierId) return; // nothing to clean up on the old side if it never had a route
@@ -4275,8 +4441,9 @@ function moveAddressToCourier(addrId, newCourierId, opts = {}){
     renderRouteSummary();
     redrawMap();
     const targetCourier = state.couriers.find(c => c.id === newCourierId);
-    showToast(`Adresă mutată la ${targetCourier ? targetCourier.name : 'curier'}.`);
+    if (!insertIntoDest) showToast(`Adresă mutată la ${targetCourier ? targetCourier.name : 'curier'}.`);
   }
+  if (insertIntoDest) insertAddressIntoRoute(newCourierId, addrId);
 }
 
 function moveStopByOffset(addrId, offset){
@@ -4429,7 +4596,7 @@ function buildStopPopup(stopNumber, courierName, addr, win){
   const nameLine = addr.clientName ? `<div class="sp-name">${escapeHtml(addr.clientName)}</div>` : '';
   const outOfAreaLine = addr.outOfArea ? `<div class="sp-window warn">⚠ în afara zonei București/Ilfov${addr.allowOutOfArea ? ' (permis manual)' : ''}</div>` : '';
   const windowLine = win
-    ? `<div class="sp-window${win.afterLimit ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}</div>`
+    ? `<div class="sp-window${win.afterLimit || win.lateForWindow ? ' warn' : ''}">${ICONS.clock}${win.windowStart}–${win.windowEnd}${win.afterLimit ? ' · după ora limită' : ''}${win.lateForWindow ? ' · depășește intervalul comunicat' : ''}</div>`
     : '';
   const detailsLine = addr.details ? `<div class="sp-meta">${ICONS.building}${escapeHtml(addr.details)}</div>` : '';
   const productsLine = addr.products ? `<div class="sp-meta">${ICONS.apple}${formatProductsWithKg(addr)}</div>` : '';
@@ -4941,7 +5108,10 @@ async function showGenerateMessagesModal(){
   const dayOverrides = new Set();
 
   function renderRow(stop){
-    const { addr, win, route } = stop;
+    const { addr, win } = stop;
+    // Traseul ACTUAL, nu cel capturat înainte de ensureCourierRun — vezi applyRunFieldsToLiveRoute
+    // (altfel linkul de urmărire lipsea din mesaj pentru clienții abia legați la această trimitere).
+    const route = state.routes[stop.courier.id] || stop.route;
     const windowText = formatWindowForMessage(win);
     const clientLink = route.clientIds && route.clientIds[addr.id] ? buildClientLink(route.clientIds[addr.id]) : '';
     const row = document.createElement('div');
