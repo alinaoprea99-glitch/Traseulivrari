@@ -2195,6 +2195,48 @@ async function geocodeAllPending(){
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
 // -------------------------------------------------------------------
+// VERSIUNE NOUĂ PUBLICATĂ — o fereastră a platformei lăsată deschisă zile întregi (alt tab,
+// telefonul) rulează în continuare codul vechi și poate strica date pe care codul nou le-ar
+// trata corect (găsit pe teren 2026-11-13: o adresă modificată dintr-o fereastră veche a lăsat
+// clientul cu comanda „anulată”). Verificăm periodic, cu o cerere HEAD ieftină, dacă app.js de
+// pe server s-a schimbat față de cel încărcat, și cerem reîncărcarea.
+// -------------------------------------------------------------------
+const APP_SCRIPT_URL = (document.currentScript && document.currentScript.src) || 'app.js';
+let loadedAppVersion = null;
+let lastVersionCheck = 0;
+
+async function checkForNewAppVersion(){
+  if (Date.now() - lastVersionCheck < 60 * 1000) return;
+  lastVersionCheck = Date.now();
+  try {
+    const res = await fetch(APP_SCRIPT_URL, { method: 'HEAD', cache: 'no-store' });
+    if (!res.ok) return;
+    const version = res.headers.get('etag') || res.headers.get('last-modified');
+    if (!version) return;
+    if (loadedAppVersion == null){ loadedAppVersion = version; return; }
+    if (version !== loadedAppVersion) showNewVersionBanner();
+  } catch (e){ /* offline — încercăm data viitoare */ }
+}
+
+function showNewVersionBanner(){
+  if (document.getElementById('newVersionBanner')) return;
+  const bar = document.createElement('div');
+  bar.id = 'newVersionBanner';
+  bar.style.cssText = 'position:fixed; top:0; left:0; right:0; z-index:100000; background:#b42318; color:#fff; padding:10px 14px; display:flex; gap:12px; align-items:center; justify-content:center; font-size:14px; box-shadow:0 2px 8px rgba(0,0,0,.25);';
+  bar.innerHTML = '<span>A fost publicată o versiune nouă a platformei. Reîncarcă pagina înainte să mai faci modificări.</span>';
+  const btn = document.createElement('button');
+  btn.textContent = 'Reîncarcă acum';
+  btn.style.cssText = 'background:#fff; color:#b42318; border:0; border-radius:6px; padding:6px 12px; font-weight:600; cursor:pointer;';
+  btn.addEventListener('click', () => location.reload());
+  bar.appendChild(btn);
+  document.body.appendChild(bar);
+}
+
+checkForNewAppVersion();
+setInterval(checkForNewAppVersion, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForNewAppVersion(); });
+
+// -------------------------------------------------------------------
 // AUTO-ASSIGNMENT (clustering) + ROUTE OPTIMIZATION (OSRM)
 // -------------------------------------------------------------------
 function initRoutePanel(){
@@ -2224,6 +2266,21 @@ async function runAutoAssignAndRoute(){
   if (invalidCouriers.length){
     const names = invalidCouriers.map(c => c.name).join(', ');
     showToast(`${names} ${invalidCouriers.length === 1 ? 'nu are' : 'nu au'} punct de plecare valid — exclus din repartizare.`, true);
+  }
+
+  // Trasee deja făcute (adesea deja trimise curierilor și clienților): implicit doar inserăm
+  // adresele noi, fără să refacem tot — refacerea completă rămâne o alegere explicită.
+  const routedIds = new Set(Object.values(state.routes).flatMap(r => (r && r.order) || []));
+  const hasExistingRoutes = validCouriers.some(c => state.routes[c.id] && state.routes[c.id].order.length);
+  if (hasExistingRoutes){
+    const newAddrs = geocodedAddrs.filter(a => !a.cancelled && !routedIds.has(a.id));
+    const mode = await askAutoAssignMode(newAddrs.length);
+    if (!mode) return;
+    if (mode === 'insert'){
+      showToast('Se inserează adresele noi…');
+      await insertNewAddressesIntoExistingRoutes(newAddrs, validCouriers);
+      return;
+    }
   }
 
   showToast('Se repartizează adresele…');
@@ -4317,43 +4374,19 @@ async function showSendToCourierModal(courierId){
  * computeDeliveryWindows) — doar adresa nouă primește interval calculat — și modificarea ajunge
  * automat la curier.
  */
-async function insertAddressIntoRoute(courierId, addrId){
+async function insertAddressIntoRoute(courierId, addrId, opts = {}){
   const courier = state.couriers.find(c => c.id === courierId);
   const addr = state.addresses.find(a => a.id === addrId);
   const route = state.routes[courierId];
-  if (!courier || !addr || !route) return;
-  const existing = route.order.filter(id => id !== addrId);
-  const stops = existing.map(id => state.addresses.find(a => a.id === id));
-  if (stops.some(s => !s) || addr.lat == null || addr.lng == null){
+  if (!courier || !addr || !route) return null;
+  const evaluation = await evaluateInsertion(courier, route, addr);
+  if (!evaluation){
     // date incomplete — comportamentul vechi (la coadă), mai bine decât să pierdem adresa
     if (!route.order.includes(addrId)) route.order.push(addrId);
     recalcRouteDistance(courierId);
-    return;
+    return null;
   }
-  const end = courier.sameAsStart || courier.end.status !== 'ok' ? courier.start : courier.end;
-  const points = [courier.start, ...stops.map(s => ({ lat: s.lat, lng: s.lng })), { lat: addr.lat, lng: addr.lng }, end];
-  const N = stops.length, NEW = N + 1, END = N + 2;
-
-  let cost;
-  try {
-    const matrix = await fetchDurationMatrix(points);
-    if (!matrix) throw new Error('Table service returned no data');
-    cost = (i, j) => matrix[i][j];
-  } catch (e){
-    console.error('OSRM indisponibil la inserare, folosesc distanța în linie dreaptă', e);
-    cost = (i, j) => haversine(points[i].lat, points[i].lng, points[j].lat, points[j].lng);
-  }
-
-  // Sloturi permise: doar după ultima oprire deja finalizată de curier.
-  let firstSlot = 0;
-  stops.forEach((s, idx) => { if (s.deliveryStatus && s.deliveryStatus !== 'pending') firstSlot = idx + 1; });
-  let bestSlot = N, bestAdded = Infinity;
-  for (let slot = firstSlot; slot <= N; slot++){
-    const prev = slot; // punctul de dinainte: 0 = start, altfel oprirea existentă slot-1 (index slot în points)
-    const next = slot === N ? END : slot + 1;
-    const added = cost(prev, NEW) + cost(NEW, next) - cost(prev, next);
-    if (added < bestAdded){ bestAdded = added; bestSlot = slot; }
-  }
+  const { slot: bestSlot, existing, firstSlot } = evaluation;
 
   // Asigurăm din nou traseul actual după await (vezi applyRunFieldsToLiveRoute).
   const live = state.routes[courierId] || route;
@@ -4376,16 +4409,139 @@ async function insertAddressIntoRoute(courierId, addrId){
     ['order', 'frozenWindows', 'totalKm', 'totalMin', 'geometry', 'legGeometries', 'legDurationsMin', 'windows'].forEach(f => { finalRoute[f] = live[f]; });
   }
 
+  const position = finalRoute.order.indexOf(addrId) + 1;
+  const late = finalRoute.order.filter(id => finalRoute.windows && finalRoute.windows[id] && finalRoute.windows[id].lateForWindow).length;
+  if (opts.silent) return { position, late };
+
   renderAddresses();
   renderCouriers();
   renderRouteSummary();
   redrawMap();
   syncRouteToCourierIfSent(courierId);
-
-  const position = finalRoute.order.indexOf(addrId) + 1;
-  const late = finalRoute.order.filter(id => finalRoute.windows && finalRoute.windows[id] && finalRoute.windows[id].lateForWindow).length;
   showToast(`${addr.clientName || addr.raw} a fost inserată ca oprirea ${position} la ${courier.name}; ordinea celorlalte opriri a rămas aceeași.`
     + (late ? ` Atenție: ${late} ${late === 1 ? 'oprire depășește' : 'opriri depășesc'} intervalul comunicat — vezi tab-ul Trasee.` : ''), late > 0);
+  return { position, late };
+}
+
+/**
+ * Cel mai bun loc în care adresa poate fi inserată în traseul EXISTENT al curierului, fără să
+ * reordoneze restul: slotul cu cel mai mic timp de condus adăugat (OSRM; linie dreaptă dacă OSRM
+ * nu răspunde), doar după ultima oprire deja finalizată. null dacă lipsesc coordonate.
+ * added e în aceeași unitate ca matricea (secunde OSRM sau km în linie dreaptă) — comparabil
+ * doar între evaluări făcute cu aceeași sursă, de aceea addedMin e mereu în minute.
+ */
+async function evaluateInsertion(courier, route, addr){
+  const existing = route.order.filter(id => id !== addr.id);
+  const stops = existing.map(id => state.addresses.find(a => a.id === id));
+  if (stops.some(s => !s || s.lat == null) || addr.lat == null || addr.lng == null) return null;
+  const end = courier.sameAsStart || courier.end.status !== 'ok' ? courier.start : courier.end;
+  const points = [courier.start, ...stops.map(s => ({ lat: s.lat, lng: s.lng })), { lat: addr.lat, lng: addr.lng }, end];
+  const N = stops.length, NEW = N + 1, END = N + 2;
+
+  let costMin;
+  try {
+    const matrix = await fetchDurationMatrix(points);
+    if (!matrix) throw new Error('Table service returned no data');
+    costMin = (i, j) => matrix[i][j] / 60;
+  } catch (e){
+    console.error('OSRM indisponibil la inserare, folosesc distanța în linie dreaptă', e);
+    costMin = (i, j) => haversine(points[i].lat, points[i].lng, points[j].lat, points[j].lng) / 35 * 60;
+  }
+
+  let firstSlot = 0;
+  stops.forEach((s, idx) => { if (s.deliveryStatus && s.deliveryStatus !== 'pending') firstSlot = idx + 1; });
+  let slot = N, addedMin = Infinity;
+  for (let k = firstSlot; k <= N; k++){
+    const prev = k; // 0 = start, altfel oprirea existentă k-1 (index k în points)
+    const next = k === N ? END : k + 1;
+    const added = costMin(prev, NEW) + costMin(NEW, next) - costMin(prev, next);
+    if (added < addedMin){ addedMin = added; slot = k; }
+  }
+  return { slot, addedMin, existing, firstSlot };
+}
+
+/**
+ * „Repartizează automat” când traseele există deja (și pot fi deja trimise curierilor/clienților):
+ * fiecare adresă care nu e încă pe niciun traseu e pusă la curierul și în locul unde adaugă cel mai
+ * puțin timp de condus — sau la curierul ales manual, dacă a fost alocată manual. Opririle existente
+ * nu se reordonează și nu se mută între curieri, iar intervalele deja comunicate rămân (vezi
+ * insertAddressIntoRoute).
+ */
+async function insertNewAddressesIntoExistingRoutes(newAddrs, couriers){
+  const touched = new Set();
+  const placed = [];
+  for (const addr of newAddrs){
+    let candidates;
+    if (addr.manuallyAssigned && addr.courierId != null && couriers.some(c => c.id === addr.courierId)){
+      candidates = couriers.filter(c => c.id === addr.courierId);
+    } else {
+      candidates = couriers.filter(c => state.routes[c.id] && state.routes[c.id].order.length);
+      if (!candidates.length) candidates = couriers;
+    }
+    let best = null;
+    for (const c of candidates){
+      const route = state.routes[c.id] || { order: [] };
+      const ev = await evaluateInsertion(c, route, addr);
+      const cost = ev ? ev.addedMin : Infinity;
+      if (!best || cost < best.cost) best = { courier: c, cost };
+    }
+    if (!best) continue;
+    const cid = best.courier.id;
+    if (!state.routes[cid]){
+      state.routes[cid] = { order: [], totalKm: 0, totalMin: 0, geometry: null, legDurationsMin: [] };
+    }
+    addr.courierId = cid;
+    const res = await insertAddressIntoRoute(cid, addr.id, { silent: true });
+    touched.add(cid);
+    placed.push({ addr, courier: best.courier, position: res ? res.position : (state.routes[cid].order.indexOf(addr.id) + 1), late: res ? res.late : 0 });
+  }
+
+  saveAddressesToStorage();
+  renderAddresses();
+  renderCouriers();
+  renderRouteSummary();
+  redrawMap();
+  updateMapTopBar();
+  updateExportButtonsState();
+  touched.forEach(cid => syncRouteToCourierIfSent(cid));
+
+  if (!placed.length){
+    showToast('Nu am putut insera adresele noi — verifică dacă sunt localizate.', true);
+    return;
+  }
+  const late = Math.max(0, ...[...touched].map(cid => {
+    const r = state.routes[cid];
+    return r ? r.order.filter(id => r.windows && r.windows[id] && r.windows[id].lateForWindow).length : 0;
+  }));
+  const summary = placed.map(p => `${p.addr.clientName || p.addr.raw} → ${p.courier.name}, oprirea ${state.routes[p.courier.id].order.indexOf(p.addr.id) + 1}`).join('; ');
+  showToast(`Adrese noi inserate, restul traseelor neschimbat: ${summary}.`
+    + (late ? ' Atenție: unele opriri depășesc intervalul comunicat — vezi tab-ul Trasee.' : ''), late > 0);
+  switchToTab('panel-trasee');
+}
+
+/** Întreabă ce face „Repartizează automat” când traseele există deja. Rezolvă cu 'insert' | 'full' | null (anulat). */
+function askAutoAssignMode(newCount){
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal-box" style="max-width:440px;">
+        <div class="modal-title">Traseele sunt deja făcute</div>
+        <div class="hint" style="margin-bottom:12px;">${newCount
+          ? `${newCount === 1 ? 'Există 1 adresă nouă' : `Există ${newCount} adrese noi`} care nu ${newCount === 1 ? 'e' : 'sunt'} pe niciun traseu. O pot insera în locul potrivit, fără să schimb ordinea, curierii sau intervalele opririlor existente.`
+          : 'Toate adresele sunt deja pe trasee — nu există adrese noi de inserat.'}</div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${newCount ? `<button class="btn btn-primary btn-sm" data-mode="insert">Inserează doar ${newCount === 1 ? 'adresa nouă' : 'adresele noi'} (recomandat)</button>` : ''}
+          <button class="btn btn-ghost btn-sm" data-mode="full">Refă toate traseele de la zero</button>
+          <button class="btn btn-ghost btn-sm" data-mode="">Anulează</button>
+        </div>
+        <div class="hint" style="margin-top:10px;">„Refă toate traseele” poate muta clienți între curieri și le poate schimba ordinea și intervalul deja comunicat.</div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = mode => { overlay.remove(); resolve(mode || null); };
+    overlay.addEventListener('click', e => { if (e.target === overlay) done(null); });
+    overlay.querySelectorAll('[data-mode]').forEach(btn => btn.addEventListener('click', () => done(btn.dataset.mode)));
+  });
 }
 
 /**
