@@ -123,7 +123,7 @@ function updateMap(data){
     }).addTo(trackMap);
   }
 
-  const showCourier = data.status === 'pending' && data.courierLat != null && data.courierLng != null;
+  const showCourier = (data.status || 'pending') === 'pending' && courierActiveToday(data) && deliveryDayState(data) !== 'future';
   let courierJustAppeared = false;
   if (showCourier){
     const latlng = [data.courierLat, data.courierLng];
@@ -165,8 +165,68 @@ function updateMap(data){
   }
 }
 
+// -------------------------------------------------------------------
+// ZIUA LIVRĂRII — mesajele se trimit de obicei cu o zi înainte, iar traseele (courierRuns) se
+// refolosesc de la o zi la alta, deci fără data livrării pagina arăta „Curierul e în drum spre
+// tine” încă din ziua de dinainte, uneori cu poziția curierului de ieri. deliveryDate (YYYY-MM-DD)
+// e setat de dispecer în fereastra „Mesaje clienți” și propagat aici de functions/index.js.
+// -------------------------------------------------------------------
+function localDateStr(d){
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** 'future' (livrare într-o zi viitoare) | 'today' | null (fără dată / dată trecută — comportamentul de până acum). */
+function deliveryDayState(data){
+  if (!data.deliveryDate) return null;
+  const today = localDateStr(new Date());
+  if (data.deliveryDate > today) return 'future';
+  if (data.deliveryDate === today) return 'today';
+  return null;
+}
+
+/** Poziția curierului contează doar dacă e de AZI — un traseu refolosit poate păstra poziția de ieri. */
+function courierActiveToday(data){
+  if (data.courierLat == null || data.courierLng == null || !data.courierUpdatedAt) return false;
+  return localDateStr(new Date(data.courierUpdatedAt)) === localDateStr(new Date());
+}
+
+function windowRangeText(data){
+  if (!data.winStart) return '';
+  const [h, m] = data.winStart.split(':').map(Number);
+  const end = `${String((h + 2) % 24).padStart(2, '0')}:${String(m || 0).padStart(2, '0')}`;
+  return `${data.winStart} – ${end}`;
+}
+
+function deliveryDayPhrase(dateStr){
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const target = new Date(y, mo - 1, d);
+  const diffDays = Math.round((target - today) / 86400000);
+  if (diffDays === 0) return 'azi';
+  if (diffDays === 1) return 'mâine';
+  return target.toLocaleDateString('ro-RO', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
 function buildStatusCardInner(data){
   const status = data.status || 'pending';
+  const dayState = status === 'pending' ? deliveryDayState(data) : null;
+  if (dayState === 'future' || (dayState === 'today' && !courierActiveToday(data))){
+    const range = windowRangeText(data);
+    const title = dayState === 'future'
+      ? `Comanda ta va fi livrată ${deliveryDayPhrase(data.deliveryDate)}${range ? `, în intervalul ${range}` : ''}`
+      : `Comanda ta se livrează azi${range ? `, în intervalul ${range}` : ''}`;
+    const sub = dayState === 'future'
+      ? 'În ziua livrării vei putea urmări aici curierul, în timp real.'
+      : 'Vei putea urmări curierul aici imediat ce pornește la drum.';
+    return {
+      statusClass: 'pending',
+      html: `
+        <div class="status-icon pending">${ICONS.clock}</div>
+        <div class="status-title">${escapeHtml(title)}</div>
+        <div class="status-sub">${escapeHtml(sub)}</div>
+      `
+    };
+  }
   let statusClass = 'pending', icon = ICONS.clock, title, sub = '';
   if (status === 'delivered'){
     statusClass = 'done'; icon = ICONS.check;
@@ -188,11 +248,11 @@ function buildStatusCardInner(data){
       sub = `Mai sunt ${ahead} ${ahead === 1 ? 'oprire' : 'opriri'} până la tine.`;
     }
   }
-  const showCourier = status === 'pending' && data.courierLat != null && data.courierLng != null;
+  const showCourier = status === 'pending' && courierActiveToday(data);
   const etaLine = showCourier
     ? `<div class="status-eta">${formatEtaText(data) || 'Se calculează timpul estimat…'}</div>`
     : '';
-  const updatedLine = (status === 'pending' && data.courierUpdatedAt)
+  const updatedLine = showCourier
     ? `<div class="status-updated">Poziție actualizată ${timeAgo(data.courierUpdatedAt)}</div>`
     : '';
   return {

@@ -141,7 +141,7 @@ exports.syncCourierRunToStops = onDocumentUpdated('courierRuns/{runId}', async (
     // schimbată — găsit pe teren 2026-11-13, clientul vedea încă adresa veche). Dispecerul nu are
     // voie să scrie aceste câmpuri direct în stops/ (firestore.rules), deci le propagăm de aici.
     // Doar câmpurile prezente — un undefined ar respinge tot batch-ul.
-    const detailMap = { clientName: 'name', addr: 'addr', details: 'details', products: 'products', productsKg: 'productsKg', amount: 'amount', payment: 'payment', lat: 'lat', lng: 'lng' };
+    const detailMap = { clientName: 'name', addr: 'addr', details: 'details', products: 'products', productsKg: 'productsKg', amount: 'amount', payment: 'payment', lat: 'lat', lng: 'lng', deliveryDate: 'deliveryDate' };
     Object.entries(detailMap).forEach(([stopField, runField]) => {
       if (s[runField] !== undefined) winFields[stopField] = s[runField];
     });

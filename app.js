@@ -2274,7 +2274,10 @@ async function runAutoAssignAndRoute(){
   const hasExistingRoutes = validCouriers.some(c => state.routes[c.id] && state.routes[c.id].order.length);
   if (hasExistingRoutes){
     const newAddrs = geocodedAddrs.filter(a => !a.cancelled && !routedIds.has(a.id));
-    const mode = await askAutoAssignMode(newAddrs.length);
+    // Adrese noi încă nelocalizate (ex: „Repartizează” apăsat înainte să se termine localizarea) —
+    // nu pot fi inserate; fereastra trebuie să spună asta clar, nu „toate sunt pe trasee”.
+    const notLocated = state.addresses.filter(a => !a.cancelled && !routedIds.has(a.id) && a.status !== 'ok').length;
+    const mode = await askAutoAssignMode(newAddrs.length, notLocated);
     if (!mode) return;
     if (mode === 'insert'){
       showToast('Se inserează adresele noi…');
@@ -3176,7 +3179,7 @@ function applyPinnedPositions(order){
 function sentRunFieldsToCarryForward(courierId){
   const prev = state.routes[courierId];
   if (!prev || !prev.courierRunId) return {};
-  return { courierRunId: prev.courierRunId, stopIds: prev.stopIds, clientIds: prev.clientIds };
+  return { courierRunId: prev.courierRunId, stopIds: prev.stopIds, clientIds: prev.clientIds, ...(prev.deliveryDate ? { deliveryDate: prev.deliveryDate } : {}) };
 }
 
 async function computeOptimizedRoute(courier, stops){
@@ -3811,6 +3814,7 @@ function buildCourierRunStops(route, stopRefs){
       lat: Math.round(a.lat * 1e6) / 1e6,
       lng: Math.round(a.lng * 1e6) / 1e6,
       winStart: win ? win.windowStart : '',
+      deliveryDate: route.deliveryDate || '', // ziua livrării (YYYY-MM-DD), setată în „Mesaje clienți” — vezi tracking.js deliveryDayState
       observatii: a.observatii || '',
       // Same geometry the dispatcher's own map draws for this leg (see buildLegGeometries) —
       // sent along so the courier's map is pixel-identical, not a separately-fetched,
@@ -3937,6 +3941,7 @@ async function ensureCourierRunNow(courier, route){
       lat: Math.round(a.lat * 1e6) / 1e6,
       lng: Math.round(a.lng * 1e6) / 1e6,
       winStart: win ? win.windowStart : '',
+      deliveryDate: route.deliveryDate || '',
       status: 'pending',
       stopsAhead: stops[addrId].order - 1,
       courierLat: null,
@@ -4073,6 +4078,7 @@ async function resyncCourierRun(courier, route, today){
         lat: fresh.lat,
         lng: fresh.lng,
         winStart: fresh.winStart,
+        deliveryDate: fresh.deliveryDate,
         status: 'pending',
         stopsAhead: fresh.order - 1,
         courierLat: null,
@@ -4088,7 +4094,7 @@ async function resyncCourierRun(courier, route, today){
       // Already in the courier's run — refresh descriptive fields + sequence number only;
       // never status/checkinLat/checkinLng/checkinNote/checkinAt (buildCourierRunStops always
       // seeds those as pending/null, which is only correct for a brand new stop).
-      ['order', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'observatii', 'legGeometry', 'stopId'].forEach(field => {
+      ['order', 'name', 'phone', 'addr', 'details', 'products', 'productsKg', 'note', 'amount', 'payment', 'lat', 'lng', 'winStart', 'deliveryDate', 'observatii', 'legGeometry', 'stopId'].forEach(field => {
         runUpdates[`stops.${key}.${field}`] = fresh[field];
       });
     }
@@ -4520,7 +4526,7 @@ async function insertNewAddressesIntoExistingRoutes(newAddrs, couriers){
 }
 
 /** Întreabă ce face „Repartizează automat” când traseele există deja. Rezolvă cu 'insert' | 'full' | null (anulat). */
-function askAutoAssignMode(newCount){
+function askAutoAssignMode(newCount, notLocatedCount = 0){
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
@@ -4529,7 +4535,8 @@ function askAutoAssignMode(newCount){
         <div class="modal-title">Traseele sunt deja făcute</div>
         <div class="hint" style="margin-bottom:12px;">${newCount
           ? `${newCount === 1 ? 'Există 1 adresă nouă' : `Există ${newCount} adrese noi`} care nu ${newCount === 1 ? 'e' : 'sunt'} pe niciun traseu. O pot insera în locul potrivit, fără să schimb ordinea, curierii sau intervalele opririlor existente.`
-          : 'Toate adresele sunt deja pe trasee — nu există adrese noi de inserat.'}</div>
+          : (notLocatedCount ? '' : 'Toate adresele sunt deja pe trasee — nu există adrese noi de inserat.')}</div>
+        ${notLocatedCount ? `<div class="hint" style="margin-bottom:12px; color:var(--danger);">⚠ ${notLocatedCount === 1 ? 'O adresă nouă nu e încă localizată' : `${notLocatedCount} adrese noi nu sunt încă localizate`}, deci nu ${notLocatedCount === 1 ? 'poate fi inserată' : 'pot fi inserate'}. Apasă întâi „Localizează adresele”, așteaptă să se termine, apoi „Repartizează automat” din nou.</div>` : ''}
         <div style="display:flex; flex-direction:column; gap:6px;">
           ${newCount ? `<button class="btn btn-primary btn-sm" data-mode="insert">Inserează doar ${newCount === 1 ? 'adresa nouă' : 'adresele noi'} (recomandat)</button>` : ''}
           <button class="btn btn-ghost btn-sm" data-mode="full">Refă toate traseele de la zero</button>
@@ -5187,6 +5194,25 @@ function buildDeliveryMessage(name, dayPhrase, windowText, clientLink){
   return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${linkLine}\n\nTe rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 
+/** Mâine, în format YYYY-MM-DD (ora locală) — data implicită de livrare în „Mesaje clienți”. */
+function defaultDeliveryDate(){
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Fraza pentru SMS, fără diacritice (GSM-7, vezi buildDeliveryMessage): „azi” / „maine” / „luni, 16.11”. */
+function dayPhraseForDate(dateStr){
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const target = new Date(y, m - 1, d);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((target - today) / 86400000);
+  if (diff === 0) return 'azi';
+  if (diff === 1) return 'maine';
+  const days = ['duminica', 'luni', 'marti', 'miercuri', 'joi', 'vineri', 'sambata'];
+  return `${days[target.getDay()]}, ${String(d).padStart(2, '0')}.${String(m).padStart(2, '0')}`;
+}
+
 /** „azi 14:05” / „5 nov., 19:40” — când a fost descărcat mesajul pentru un client (addr.messageSentAt). */
 function formatMessageSentAt(iso){
   const d = new Date(iso);
@@ -5225,9 +5251,15 @@ async function showGenerateMessagesModal(){
     <div class="modal-box" style="max-width:540px;">
       <div class="modal-title">Mesaje pentru clienți</div>
       <div class="hint" style="margin-bottom:10px;">Verifică prenumele detectat pentru fiecare client — clienții nu completează mereu corect câmpurile de nume la comandă. Corectează direct în casetă dacă e greșit, apoi descarcă fișierul pentru trimitere automată prin Messages. Ziua livrării de sus se aplică tuturor — editeaz-o direct la un client dacă livrarea lui e în altă zi.</div>
-      <div class="field" style="margin-bottom:10px; max-width:200px;">
-        <label>Ziua livrării (implicit, pentru toți)</label>
-        <input type="text" id="gmDayPhrase" value="maine">
+      <div class="field-row" style="margin-bottom:10px;">
+        <div class="field" style="max-width:170px;">
+          <label>Data livrării</label>
+          <input type="date" id="gmDeliveryDate" value="${defaultDeliveryDate()}">
+        </div>
+        <div class="field" style="max-width:200px;">
+          <label>Ziua livrării în mesaj (pentru toți)</label>
+          <input type="text" id="gmDayPhrase" value="${dayPhraseForDate(defaultDeliveryDate())}">
+        </div>
       </div>
       <label id="gmOnlyNewWrap" style="display:none; align-items:center; gap:6px; margin-bottom:10px; font-size:13px; cursor:pointer;">
         <input type="checkbox" id="gmOnlyNew"> <span>Doar clienții fără mesaj trimis <span id="gmOnlyNewCount" class="hint"></span></span>
@@ -5265,6 +5297,16 @@ async function showGenerateMessagesModal(){
   const rowsEl = overlay.querySelector('#gmRows');
   rowsEl.innerHTML = '';
   const dayInput = overlay.querySelector('#gmDayPhrase');
+  const deliveryDateInput = overlay.querySelector('#gmDeliveryDate');
+  // Fraza din SMS urmează data aleasă, cât timp n-a fost scrisă de mână.
+  let dayPhraseEdited = false;
+  dayInput.addEventListener('input', () => { dayPhraseEdited = true; });
+  deliveryDateInput.addEventListener('change', () => {
+    if (dayPhraseEdited || !deliveryDateInput.value) return;
+    dayInput.value = dayPhraseForDate(deliveryDateInput.value);
+    dayInput.dispatchEvent(new Event('input'));
+    dayPhraseEdited = false;
+  });
   overlay.querySelector('#gmDownloadBtn').disabled = false;
 
   // Ziua livrării e implicit aceeași pentru toți (câmpul de sus), dar unele comenzi dintr-un
@@ -5366,6 +5408,21 @@ async function showGenerateMessagesModal(){
     });
     const sentAt = new Date().toISOString();
     included.forEach(({ addr }) => { addr.messageSentAt = sentAt; });
+    // Data livrării ajunge pe pagina de urmărire a fiecărui client (vezi tracking.js
+    // deliveryDayState): până în ziua livrării vede „Comanda ta va fi livrată mâine…”, nu
+    // „Curierul e în drum spre tine”. Setată pe traseul fiecărui curier inclus, apoi retrimisă.
+    const deliveryDate = deliveryDateInput.value;
+    if (deliveryDate){
+      const courierIds = [...new Set(included.map(st => st.courier.id))];
+      courierIds.forEach(cid => {
+        const route = state.routes[cid];
+        if (route && route.deliveryDate !== deliveryDate){
+          route.deliveryDate = deliveryDate;
+          syncRouteToCourierIfSent(cid);
+        }
+      });
+      saveRoutesToStorage();
+    }
     saveAddressesToStorage(); // persists messageSentAt + any greeting-name corrections made in this review pass
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
