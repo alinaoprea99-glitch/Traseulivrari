@@ -2,7 +2,7 @@
 // depends on Nominatim/OSRM or Firestore), so this exists only to (a) satisfy the browser's
 // installability requirement for a PWA and (b) let the static app shell still load if opened
 // with no connection. Everything else always goes to the network untouched.
-const CACHE_NAME = 'trasee-curieri-shell-v3';
+const CACHE_NAME = 'trasee-curieri-shell-v4';
 const APP_SHELL = [
   './',
   './index.html',
@@ -52,8 +52,13 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== location.origin) return;
 
+  // cache: 'no-cache' — browserul revalidează mereu la server (304 ieftin dacă nimic nu s-a
+  // schimbat), în loc să servească din cache-ul HTTP propriu (GitHub Pages: max-age=600). Fără
+  // asta, o reîncărcare în primele 10 minute după o publicare rula tot codul vechi (găsit pe teren
+  // 2026-11-13: „Repartizează automat” nou testat imediat după publicare, a rulat varianta veche).
+  // Prin URL, nu prin event.request: o cerere de navigare nu poate fi re-creată cu opțiuni.
   event.respondWith(
-    fetch(event.request).then((response) => {
+    fetch(event.request.url, { cache: 'no-cache', credentials: 'same-origin' }).then((response) => {
       if (response.ok){
         const clone = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
