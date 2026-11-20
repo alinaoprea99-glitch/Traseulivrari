@@ -3903,7 +3903,21 @@ async function ensureCourierRunNow(courier, route){
   if (!courier.persistentId) courier.persistentId = db.collection('courierLinks').doc().id;
   const today = new Date().toISOString().slice(0, 10);
 
-  if (route.courierRunId && route.stopIds){
+  // Regula dispecerului (2026-11-20): traseele se trimit MEREU cu o seară înainte, pentru livrarea
+  // din ziua următoare. Data livrării se pune deci automat, nu doar din „Mesaje clienți” — găsit pe
+  // teren: mesaje generate dintr-o fereastră veche, fără dată, iar clienții vedeau „Curierul e în
+  // drum spre tine” cu o zi înainte. Data aleasă în „Mesaje clienți” are în continuare prioritate.
+  //   - traseu trimis acum PRIMA OARĂ → mâine (cu excepția unei date deja setate pe azi/viitor);
+  //   - traseu deja trimis, cu dată trecută (traseu refolosit pentru un lot nou) → mâine;
+  //   - traseu deja trimis, cu data de azi sau viitoare → neatinsă (ex: modificări în ziua livrării).
+  const localToday = localDateString(new Date());
+  const isNewRun = !(route.courierRunId && route.stopIds);
+  if ((isNewRun && !(route.deliveryDate && route.deliveryDate >= localToday))
+    || (!isNewRun && route.deliveryDate && route.deliveryDate < localToday)){
+    route.deliveryDate = defaultDeliveryDate();
+  }
+
+  if (!isNewRun){
     return resyncCourierRun(courier, route, today);
   }
 
@@ -3976,6 +3990,7 @@ async function ensureCourierRunNow(courier, route){
   });
   applyRunFieldsToLiveRoute(courier.id, route, r => {
     r.courierRunId = runRef.id;
+    if (route.deliveryDate) r.deliveryDate = route.deliveryDate;
     r.stopIds = { ...stopIds };
     r.clientIds = { ...clientIds };
   });
@@ -4121,6 +4136,7 @@ async function resyncCourierRun(courier, route, today){
   applyRunFieldsToLiveRoute(courier.id, route, r => {
     if (r.courierRunId && r.courierRunId !== runId) return; // alt traseu între timp — nu-l atingem
     r.courierRunId = runId;
+    if (route.deliveryDate) r.deliveryDate = route.deliveryDate;
     r.stopIds = { ...stopIds };
     const clientIds = { ...(r.clientIds || {}), ...linkedClientIds };
     removedKeys.forEach(key => { delete clientIds[key]; });
@@ -5194,11 +5210,16 @@ function buildDeliveryMessage(name, dayPhrase, windowText, clientLink){
   return `${greeting}\n\nIti multumim pentru comanda de fructe! \n\nComanda va ajunge ${dayPhrase}, in intervalul: ${windowText}.${linkLine}\n\nTe rugam sa ne confirmi disponibilitatea pentru livrare in intervalul mentionat. \n\nO zi minunata,\nCraita Merelor - cu traditie din Voinesti!`;
 }
 
-/** Mâine, în format YYYY-MM-DD (ora locală) — data implicită de livrare în „Mesaje clienți”. */
+/** YYYY-MM-DD în ora locală (nu UTC — după miezul nopții UTC ar fi încă „ieri” în România). */
+function localDateString(d){
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Mâine, în format YYYY-MM-DD (ora locală) — data implicită de livrare (traseele se trimit cu o seară înainte). */
 function defaultDeliveryDate(){
   const d = new Date();
   d.setDate(d.getDate() + 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return localDateString(d);
 }
 
 /** Fraza pentru SMS, fără diacritice (GSM-7, vezi buildDeliveryMessage): „azi” / „maine” / „luni, 16.11”. */
